@@ -54,10 +54,36 @@ const ECHO_INIT_MSGS = [
 
 const GREETS = ['Ehi.', 'Sì?', 'Dimmi.', "Ciao. Che c'è?", 'Finalmente.', 'Mhm?'];
 
+// ─── Mood display config ──────────────────────────────────────────────────────
+const MOOD_STYLE = {
+  neutral:  { emoji: '😑', color: '#6b7280', label: 'distante'  },
+  playful:  { emoji: '😏', color: '#22c55e', label: 'simpatica' },
+  annoyed:  { emoji: '🙄', color: '#f59e0b', label: 'seccata'   },
+  cold:     { emoji: '🧊', color: '#38bdf8', label: 'fredda'    },
+  mean:     { emoji: '😈', color: '#ef4444', label: 'cattiva'   },
+};
+
 // ─── AI Call ──────────────────────────────────────────────────────────────────
+
+// Groq (and OpenAI) reject requests with consecutive same-role messages.
+// Merge them into one, joining content with a newline.
+function dedupeRoles(messages) {
+  return messages.reduce((acc, msg) => {
+    if (acc.length > 0 && acc[acc.length - 1].role === msg.role) {
+      acc[acc.length - 1] = {
+        role: acc[acc.length - 1].role,
+        content: acc[acc.length - 1].content + '\n' + msg.content,
+      };
+    } else {
+      acc.push({ role: msg.role, content: msg.content });
+    }
+    return acc;
+  }, []);
+}
+
 async function callAI(cfg, hist, mood) {
   const sysPrompt = SYS.replace('{MOOD}', mood);
-  const cleanHist = hist.slice(-12).filter(m => m.role !== 'system');
+  const cleanHist = dedupeRoles(hist.slice(-12).filter(m => m.role !== 'system'));
 
   if (cfg.provider === 'openai') {
     const msgs = [{ role: 'system', content: sysPrompt }, ...cleanHist];
@@ -95,7 +121,11 @@ async function callAI(cfg, hist, mood) {
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + cfg.apiKey },
       body: JSON.stringify({ model: 'llama-3.3-70b-versatile', messages: msgs, max_tokens: 120, temperature: 1.1 }),
     });
-    if (!r.ok) throw new Error('Groq ' + r.status);
+    if (!r.ok) {
+      const errBody = await r.json().catch(() => ({}));
+      const errMsg = errBody?.error?.message || JSON.stringify(errBody);
+      throw new Error('Groq ' + r.status + ': ' + errMsg);
+    }
     return (await r.json()).choices[0].message.content.trim();
   }
 }
@@ -316,13 +346,32 @@ export default function App() {
 
     if (!cfgRef.current.apiKey) {
       const errMsg = { role: 'assistant', content: 'Metti la API key nelle impostazioni ⚙️', time: fmtTime() };
-      setHist(h => [...h, errMsg]);
+      const withErr = [...nextHist, errMsg];
+      setHist(withErr);
+      histRef.current = withErr;
       return;
     }
 
     setThinking(true); thinkingRef.current = true;
     setStatus('sta scrivendo...');
     if (Math.random() < 0.2) shiftMood();
+
+    // ── Cold mood behaviour ──────────────────────────────────────────────────
+    // 15% chance she ignores completely, 60% chance she takes her time
+    if (moodRef.current === 'cold') {
+      const roll = Math.random();
+      if (roll < 0.15) {
+        // Flat-out ignores — shows "online" immediately, never replies
+        setThinking(false); thinkingRef.current = false;
+        setStatus('online');
+        return;
+      } else if (roll < 0.75) {
+        // Delayed reply — waits 8–20 seconds as if she can't be bothered
+        const delay = 8000 + Math.floor(Math.random() * 12000);
+        await new Promise(res => setTimeout(res, delay));
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
 
     try {
       const reply = await callAI(cfgRef.current, histRef.current, moodRef.current);
@@ -336,7 +385,9 @@ export default function App() {
       setStatus('online');
     } catch (err) {
       const errMsg = { role: 'assistant', content: 'Errore: ' + err.message, time: fmtTime() };
-      setHist(h => [...h, errMsg]);
+      const withErr = [...histRef.current, errMsg];
+      setHist(withErr);
+      histRef.current = withErr;
       setStatus('online');
     } finally {
       setThinking(false); thinkingRef.current = false;
@@ -378,7 +429,13 @@ export default function App() {
           <View style={s.dot} />
         </View>
         <View style={s.hInfo}>
-          <Text style={s.hName}>Echo</Text>
+          <View style={s.hNameRow}>
+            <Text style={s.hName}>Echo</Text>
+            <View style={[s.moodPill, { backgroundColor: MOOD_STYLE[mood].color + '22', borderColor: MOOD_STYLE[mood].color + '66' }]}>
+              <Text style={s.moodEmoji}>{MOOD_STYLE[mood].emoji}</Text>
+              <Text style={[s.moodLabel, { color: MOOD_STYLE[mood].color }]}>{MOOD_STYLE[mood].label}</Text>
+            </View>
+          </View>
           <Text style={s.hStatus}>{status}</Text>
         </View>
         <TouchableOpacity style={s.hBtn} onPress={() => setShowSettings(true)}>
@@ -475,7 +532,11 @@ const s = StyleSheet.create({
   av:       { width:38, height:38, borderRadius:19, backgroundColor:PURPLE, alignItems:'center', justifyContent:'center' },
   dot:      { position:'absolute', bottom:1, right:1, width:10, height:10, borderRadius:5, backgroundColor:'#22c55e', borderWidth:2, borderColor:'#0f0f1a' },
   hInfo:    { flex:1, marginLeft:10 },
+  hNameRow: { flexDirection:'row', alignItems:'center', gap:8 },
   hName:    { color:'#fff', fontSize:16, fontWeight:'600' },
+  moodPill: { flexDirection:'row', alignItems:'center', gap:3, paddingHorizontal:7, paddingVertical:2, borderRadius:10, borderWidth:1 },
+  moodEmoji:{ fontSize:11 },
+  moodLabel:{ fontSize:10, fontWeight:'600', letterSpacing:0.3 },
   hStatus:  { color:'#22c55e', fontSize:11, marginTop:1 },
   hBtn:     { width:36, height:36, borderRadius:18, backgroundColor:CARD, alignItems:'center', justifyContent:'center' },
 
