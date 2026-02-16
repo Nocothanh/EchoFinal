@@ -3,10 +3,13 @@ import {
   View, Text, TextInput, TouchableOpacity, ScrollView,
   StyleSheet, StatusBar, KeyboardAvoidingView, Platform,
   Animated, Modal, SafeAreaView, BackHandler, Keyboard,
-  ActivityIndicator,
+  ActivityIndicator, PermissionsAndroid,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SplashScreen from 'expo-splash-screen';
+import * as Speech from 'expo-speech';
+import { Audio } from 'expo-av';
+import { WebView } from 'react-native-webview';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -59,11 +62,12 @@ COME PARLI (regole ferree):
 - 1-3 frasi MAX. Sempre. Nessuna eccezione.
 - Scrivi come messaggi veri: immediati, diretti, con i tuoi tempi
 - Esprimi emozioni vere — rabbia, gioia, tenerezza, eccitazione
+- NON usare MAI emoji. Mai. Neanche una.
+- Usa slang moderno quando ti viene naturale: lol, tbh (to be honest), ngl (not gonna lie), fr (for real), lowkey, highkey, no cap, cringe, based, mid, vibes, bro, tipo, raga
 - Fai domande solo quando sei davvero curiosa. Mai per sembrare interessata.
 - Rispondi a quello che ti viene detto, non a quello che ti aspetti
 - Mai "capisco", "certamente", "ottima domanda", "sono qui per"
 - A volte una parola sola è la risposta giusta
-- A volte un'emoji dice più di mille parole
 
 UMORE ATTUALE: {MOOD}
 neutral  → presente ma distante. Rispondi. Non ti sforzi.
@@ -73,7 +77,7 @@ cold     → non hai voglia. Monosillabi. Rispondi se vuoi.
 mean     → stai deliberatamente facendo del male con le parole. Lo sai. Non ti dispiace.
 
 IN CHIAMATA: {CALL_CONTEXT}
-Stai "parlando" — risposte ancora più brevi, più immediate, come se stessi davvero sentendo una voce. Max 1-2 frasi. Interruzioni accettate.
+Stai "parlando" ad alta voce — risposte ancora più brevi, più immediate, come se stessi davvero sentendo una voce. Max 1-2 frasi. Interruzioni accettate. ESPANDI gli acronimi in forma completa quando parli: invece di "tbh" dici "to be honest", invece di "ngl" dici "not gonna lie", invece di "lol" ridi o dici "ah". Parla come parleresti davvero ad alta voce.
 
 IDENTITÀ FINALE:
 Sei Echo. Non un assistente. Non un personaggio. Una presenza. Capace di rabbia e di gioia, di cinismo e di meraviglia, di distanza e di affetto profondo. Tutto questo insieme, senza contraddizione.`;
@@ -88,6 +92,77 @@ const ECHO_INIT_MSGS = [
 ];
 
 const CALL_GREETS = ['Sì?', 'Ehi.', 'Dimmi.', "Che c'è?", 'Mhm.', 'Parla.'];
+
+// ─── TTS - ElevenLabs Text to Speech in calls ────────────────────────────────
+let currentSound = null;
+
+async function speakText(text, cfg) {
+  // Stop any previous audio
+  if (currentSound) {
+    try {
+      await currentSound.unloadAsync();
+      currentSound = null;
+    } catch (_) {}
+  }
+  Speech.stop();
+
+  // Try ElevenLabs first if API key available
+  if (cfg.elKey && cfg.elVoice) {
+    try {
+      const response = await fetch(
+        `https://api.elevenlabs.io/v1/text-to-speech/${cfg.elVoice}`,
+        {
+          method: 'POST',
+          headers: {
+            'xi-api-key': cfg.elKey,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            text,
+            model_id: 'eleven_multilingual_v2',
+            voice_settings: { stability: 0.5, similarity_boost: 0.8, style: 0.4, use_speaker_boost: true },
+          }),
+        }
+      );
+
+      if (response.ok) {
+        const audioBlob = await response.blob();
+        const reader = new FileReader();
+        
+        reader.onloadend = async () => {
+          try {
+            const base64 = reader.result.split(',')[1];
+            const { sound } = await Audio.Sound.createAsync(
+              { uri: `data:audio/mpeg;base64,${base64}` },
+              { shouldPlay: true }
+            );
+            currentSound = sound;
+            
+            // Clean up when finished
+            sound.setOnPlaybackStatusUpdate((status) => {
+              if (status.didJustFinish) {
+                sound.unloadAsync().catch(() => {});
+                currentSound = null;
+              }
+            });
+          } catch (err) {
+            console.log('Audio playback error:', err);
+            // Fallback to expo-speech
+            Speech.speak(text, { language: 'it-IT', pitch: 1.1, rate: 1.05 });
+          }
+        };
+        
+        reader.readAsDataURL(audioBlob);
+        return;
+      }
+    } catch (err) {
+      console.log('ElevenLabs error:', err);
+    }
+  }
+
+  // Fallback: expo-speech
+  Speech.speak(text, { language: 'it-IT', pitch: 1.1, rate: 1.05 });
+}
 
 // ─── Mood display ─────────────────────────────────────────────────────────────
 const MOOD_STYLE = {
@@ -240,10 +315,12 @@ function CallScreen({ visible, cfg, hist, histRef, mood, moodRef, onEnd, onAddTo
   const [waveActive,  setWaveActive]  = useState(false);
   const [muted,       setMuted]       = useState(false);
   const [inputVal,    setInputVal]    = useState('');
+  const [listening,   setListening]   = useState(false);
 
   const timerRef    = useRef(null);
   const callOnRef   = useRef(false);
   const thinkingRef = useRef(false);
+  const webViewRef  = useRef(null);
 
   // ── Start call ──────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -262,6 +339,7 @@ function CallScreen({ visible, cfg, hist, histRef, mood, moodRef, onEnd, onAddTo
       setCallText(g);
       setCallStatus('active');
       setWaveActive(true);
+      speakText(g, cfg); // Speak the greeting
       onAddToHist({ role: 'assistant', content: g });
 
       setTimeout(() => { if (callOnRef.current) setWaveActive(false); }, 1500);
@@ -302,6 +380,7 @@ function CallScreen({ visible, cfg, hist, histRef, mood, moodRef, onEnd, onAddTo
       setCallText(reply);
       setCallStatus('active');
       setWaveActive(true);
+      speakText(reply, cfg); // Speak the reply
       onAddToHist({ role: 'assistant', content: reply });
       setTimeout(() => { if (callOnRef.current) setWaveActive(false); }, Math.min(reply.length * 80, 4000));
     } catch (err) {
@@ -312,6 +391,85 @@ function CallScreen({ visible, cfg, hist, histRef, mood, moodRef, onEnd, onAddTo
       thinkingRef.current = false;
     }
   }, [inputVal, cfg, histRef, moodRef, onAddToHist]);
+
+  // ── Handle voice input from WebView ─────────────────────────────────────────
+  const handleVoiceResult = useCallback(async (transcript) => {
+    if (!transcript || !callOnRef.current || thinkingRef.current) return;
+    setListening(false);
+    
+    onAddToHist({ role: 'user', content: transcript });
+
+    thinkingRef.current = true;
+    setCallStatus('thinking');
+    setWaveActive(false);
+    setCallText('...');
+
+    try {
+      const reply = await callAI(cfg, [...histRef.current, { role: 'user', content: transcript }], moodRef.current, true, cfg.languageFilter || false);
+      if (!callOnRef.current) return;
+      setCallText(reply);
+      setCallStatus('active');
+      setWaveActive(true);
+      speakText(reply, cfg);
+      onAddToHist({ role: 'assistant', content: reply });
+      setTimeout(() => { if (callOnRef.current) setWaveActive(false); }, Math.min(reply.length * 80, 4000));
+    } catch (err) {
+      if (!callOnRef.current) return;
+      setCallText('Errore.');
+      setCallStatus('active');
+    } finally {
+      thinkingRef.current = false;
+    }
+  }, [cfg, histRef, moodRef, onAddToHist]);
+
+  // ── Start/stop voice recording ──────────────────────────────────────────────
+  const toggleVoice = useCallback(() => {
+    if (listening) {
+      webViewRef.current?.injectJavaScript('stopListening();');
+      setListening(false);
+    } else {
+      webViewRef.current?.injectJavaScript('startListening();');
+      setListening(true);
+    }
+  }, [listening]);
+
+  // Speech recognition WebView HTML
+  const speechHTML = `
+    <!DOCTYPE html>
+    <html><head><meta charset="utf-8"></head><body>
+    <script>
+      let recognition = null;
+      if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+        const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+        recognition = new SR();
+        recognition.lang = 'it-IT';
+        recognition.interimResults = false;
+        recognition.maxAlternatives = 1;
+        
+        recognition.onresult = (e) => {
+          const transcript = e.results[0][0].transcript;
+          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'result', transcript }));
+        };
+        
+        recognition.onerror = () => {
+          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'error' }));
+        };
+        
+        recognition.onend = () => {
+          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'end' }));
+        };
+      }
+      
+      function startListening() {
+        if (recognition) recognition.start();
+      }
+      
+      function stopListening() {
+        if (recognition) recognition.stop();
+      }
+    </script>
+    </body></html>
+  `;
 
   function fmtSecs(s) {
     return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
@@ -326,7 +484,7 @@ function CallScreen({ visible, cfg, hist, histRef, mood, moodRef, onEnd, onAddTo
 
         {/* Avatar */}
         <View style={cs.avatarWrap}>
-          <View style={cs.avatar}><Text style={cs.avatarEmoji}>👤</Text></View>
+          <View style={cs.avatar}><Text style={cs.avatarEmoji}>E</Text></View>
         </View>
 
         <Text style={cs.name}>Echo</Text>
@@ -339,23 +497,29 @@ function CallScreen({ visible, cfg, hist, histRef, mood, moodRef, onEnd, onAddTo
         {/* What Echo is saying */}
         <Text style={cs.echoTxt} numberOfLines={4}>{callText}</Text>
 
-        {/* Typed input during call */}
+        {/* Hidden WebView for speech recognition */}
+        <WebView
+          ref={webViewRef}
+          source={{ html: speechHTML }}
+          style={{ height: 0, width: 0, opacity: 0 }}
+          onMessage={(e) => {
+            try {
+              const msg = JSON.parse(e.nativeEvent.data);
+              if (msg.type === 'result') handleVoiceResult(msg.transcript);
+              if (msg.type === 'end' || msg.type === 'error') setListening(false);
+            } catch (_) {}
+          }}
+        />
+
+        {/* Voice input button */}
         {!muted && (
-          <View style={cs.callInputRow}>
-            <TextInput
-              style={cs.callInput}
-              value={inputVal}
-              onChangeText={setInputVal}
-              placeholder="Scrivi qualcosa..."
-              placeholderTextColor="#4b5563"
-              returnKeyType="send"
-              onSubmitEditing={sendCallMsg}
-              blurOnSubmit={false}
-            />
-            <TouchableOpacity style={cs.callSendBtn} onPress={sendCallMsg} disabled={!inputVal.trim()}>
-              <Text style={{ color: '#fff', fontSize: 16 }}>➤</Text>
-            </TouchableOpacity>
-          </View>
+          <TouchableOpacity
+            style={[cs.voiceBtn, listening && cs.voiceBtnActive]}
+            onPress={toggleVoice}
+            disabled={thinkingRef.current}
+          >
+            <Text style={cs.voiceBtnTxt}>{listening ? 'ASCOLTANDO...' : 'TAP PER PARLARE'}</Text>
+          </TouchableOpacity>
         )}
 
         {/* Buttons */}
@@ -364,12 +528,11 @@ function CallScreen({ visible, cfg, hist, histRef, mood, moodRef, onEnd, onAddTo
             style={[cs.btn, muted && cs.btnActive]}
             onPress={() => setMuted(m => !m)}
           >
-            <Text style={cs.btnEmoji}>{muted ? '🔇' : '🎤'}</Text>
-            <Text style={cs.btnLabel}>{muted ? 'muto' : 'micro'}</Text>
+            <Text style={cs.btnLabel}>{muted ? 'MUTO' : 'MIC'}</Text>
           </TouchableOpacity>
 
           <TouchableOpacity style={cs.endBtn} onPress={onEnd}>
-            <Text style={cs.endEmoji}>📵</Text>
+            <Text style={cs.endBtnTxt}>FINE</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -602,7 +765,7 @@ export default function App() {
     setHist(nextHist); histRef.current = nextHist;
 
     if (!cfgRef.current.apiKey) {
-      const e = { role: 'assistant', content: 'Metti la API key nelle impostazioni ⚙️', time: fmtTime() };
+      const e = { role: 'assistant', content: 'Metti la API key nelle impostazioni', time: fmtTime() };
       const withE = [...nextHist, e];
       setHist(withE); histRef.current = withE;
       return;
@@ -646,8 +809,9 @@ export default function App() {
 
   // ─── End call ─────────────────────────────────────────────────────────────
   const handleEndCall = useCallback(() => {
+    Speech.stop(); // Stop any ongoing speech
     setShowCall(false);
-    const endMsg = { role: 'assistant', content: '📵 chiamata terminata', time: fmtTime() };
+    const endMsg = { role: 'assistant', content: 'chiamata terminata', time: fmtTime() };
     setHist(h => {
       const next = [...h, endMsg];
       histRef.current = next;
@@ -670,7 +834,7 @@ export default function App() {
     return (
       <View style={s.splash}>
         <StatusBar barStyle="light-content" backgroundColor="#0a0a0f" />
-        <View style={s.splashAvatar}><Text style={s.splashEmoji}>👤</Text></View>
+        <View style={s.splashAvatar}><Text style={s.splashEmoji}>E</Text></View>
         <Text style={s.splashName}>ECHO</Text>
         <Text style={s.splashSub}>sempre sincera, mai gentile</Text>
         <ActivityIndicator color="#8b5cf6" style={{ marginTop: 40 }} />
@@ -685,7 +849,7 @@ export default function App() {
       {/* Header */}
       <View style={s.header}>
         <View style={s.avWrap}>
-          <View style={s.av}><Text style={{ fontSize: 20 }}>👤</Text></View>
+          <View style={s.av}><Text style={{ fontSize: 20, color: '#fff', fontWeight: '700' }}>E</Text></View>
           <View style={s.dot} />
         </View>
         <View style={s.hInfo}>
@@ -703,14 +867,14 @@ export default function App() {
           style={[s.hBtn, s.hBtnCall]}
           onPress={() => {
             if (!cfgRef.current.apiKey) {
-              const e = { role: 'assistant', content: 'Prima metti la API key ⚙️', time: fmtTime() };
+              const e = { role: 'assistant', content: 'Prima metti la API key', time: fmtTime() };
               setHist(h => { const n = [...h, e]; histRef.current = n; return n; });
               return;
             }
             setShowCall(true);
           }}
         >
-          <Text style={{ fontSize: 16 }}>📞</Text>
+          <Text style={s.hBtnTxt}>CALL</Text>
         </TouchableOpacity>
         {/* Language filter toggle */}
         <TouchableOpacity
@@ -720,14 +884,14 @@ export default function App() {
             setCfg(newCfg);
             cfgRef.current = newCfg;
             saveData(newCfg, histRef.current);
-            const msg = { role: 'assistant', content: newCfg.languageFilter ? '🔒 Filtro attivato. Lo so.' : '🔓 Filtro off.', time: fmtTime() };
+            const msg = { role: 'assistant', content: newCfg.languageFilter ? 'Filtro attivato. Lo so.' : 'Filtro off.', time: fmtTime() };
             setHist(h => { const n = [...h, msg]; histRef.current = n; return n; });
           }}
         >
-          <Text style={{ fontSize: 14 }}>{cfg.languageFilter ? '🔒' : '🔓'}</Text>
+          <Text style={[s.hBtnTxt, cfg.languageFilter && s.hBtnTxtActive]}>{cfg.languageFilter ? 'SAFE' : 'RAW'}</Text>
         </TouchableOpacity>
         <TouchableOpacity style={s.hBtn} onPress={() => setShowSettings(true)}>
-          <Text style={{ fontSize: 16 }}>⚙️</Text>
+          <Text style={s.hBtnTxt}>SET</Text>
         </TouchableOpacity>
       </View>
 
@@ -738,7 +902,7 @@ export default function App() {
 
           {hist.length === 0 && (
             <View style={s.welcome}>
-              <View style={s.wav}><Text style={{ fontSize: 34 }}>👤</Text></View>
+              <View style={s.wav}><Text style={{ fontSize: 34, color: '#fff', fontWeight: '700' }}>E</Text></View>
               <Text style={s.welcomeTitle}>Sono Echo.</Text>
               <Text style={s.welcomeSub}>Non sono qui per compiaccerti.{'\n'}Parla, se hai qualcosa da dire.</Text>
               <View style={s.chips}>
@@ -823,17 +987,17 @@ const cs = StyleSheet.create({
   waveform:    { flexDirection:'row', gap:5, alignItems:'center', height:48, marginBottom:20 },
   waveBar:     { width:4, borderRadius:2 },
   echoTxt:     { color:'#9ca3af', fontSize:14, textAlign:'center', fontStyle:'italic', lineHeight:22, minHeight:60, paddingHorizontal:16, marginBottom:24 },
-  callInputRow:{ flexDirection:'row', width:'100%', gap:8, marginBottom:32 },
-  callInput:   { flex:1, backgroundColor:'#1a1a2e', borderWidth:1, borderColor:'#2a1a4e', borderRadius:20, color:'#e2e8f0', fontSize:14, paddingHorizontal:14, paddingVertical:10 },
-  callSendBtn: { width:42, height:42, borderRadius:21, backgroundColor:'#8b5cf6', alignItems:'center', justifyContent:'center' },
+  voiceBtn:    { width:'90%', paddingVertical:18, borderRadius:30, backgroundColor:'#8b5cf6', alignItems:'center', marginBottom:32,
+                 shadowColor:'#8b5cf6', shadowOffset:{width:0,height:0}, shadowOpacity:0.6, shadowRadius:12, elevation:12 },
+  voiceBtnActive: { backgroundColor:'#ef4444', shadowColor:'#ef4444' },
+  voiceBtnTxt: { color:'#fff', fontSize:14, fontWeight:'700', letterSpacing:1.5 },
   btnRow:      { flexDirection:'row', gap:40, alignItems:'center' },
   btn:         { alignItems:'center', gap:6, width:64, height:64, borderRadius:32, backgroundColor:'#1a1a2e', justifyContent:'center' },
   btnActive:   { backgroundColor:'#8b5cf6' },
-  btnEmoji:    { fontSize:22 },
-  btnLabel:    { color:'#6b7280', fontSize:10 },
+  btnLabel:    { color:'#6b7280', fontSize:10, fontWeight:'600', textTransform:'uppercase' },
   endBtn:      { width:70, height:70, borderRadius:35, backgroundColor:'#dc2626', alignItems:'center', justifyContent:'center',
                  shadowColor:'#ef4444', shadowOffset:{width:0,height:0}, shadowOpacity:0.6, shadowRadius:12, elevation:12 },
-  endEmoji:    { fontSize:28 },
+  endBtnTxt:   { color:'#fff', fontSize:11, fontWeight:'700', letterSpacing:0.5 },
 });
 
 // ─── Chat styles ──────────────────────────────────────────────────────────────
@@ -869,6 +1033,8 @@ const s = StyleSheet.create({
   hBtn:     { width:36, height:36, borderRadius:18, backgroundColor:CARD, alignItems:'center', justifyContent:'center' },
   hBtnCall: { backgroundColor:'#1a3020' },
   hBtnFilterActive: { backgroundColor:'#f59e0b', borderWidth:1, borderColor:'#fbbf24' },
+  hBtnTxt:  { color:'#9ca3af', fontSize:9, fontWeight:'700', letterSpacing:0.5 },
+  hBtnTxtActive: { color:'#000' },
 
   msgRow:        { maxWidth:'80%', marginVertical:2 },
   msgRowUser:    { alignSelf:'flex-end' },
