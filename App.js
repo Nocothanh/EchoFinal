@@ -1,5 +1,5 @@
-import { useEffect, useRef, useCallback } from 'react';
-import { StyleSheet, View, StatusBar, Platform, BackHandler } from 'react-native';
+import { useEffect, useRef, useCallback, useState } from 'react';
+import { StyleSheet, View, StatusBar, Platform, BackHandler, Text, ActivityIndicator } from 'react-native';
 import { WebView } from 'react-native-webview';
 import * as SplashScreen from 'expo-splash-screen';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -18,12 +18,7 @@ const ECHO_HTML = `<!DOCTYPE html>
     *{margin:0;padding:0;box-sizing:border-box}
     html,body{width:100%;height:100%;overflow:hidden;background:#0a0a0f;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
     #root{width:100%;height:100vh;display:flex;flex-direction:column;background:#0a0a0f}
-    #splash{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0a0a0f;z-index:999;transition:opacity .5s}
-    #splash.hide{opacity:0;pointer-events:none}
-    .splash-av{width:100px;height:100px;border-radius:50%;background:linear-gradient(135deg,#8b5cf6,#ec4899);display:flex;align-items:center;justify-content:center;font-size:48px;margin-bottom:20px;box-shadow:0 0 40px rgba(139,92,246,.5);animation:breathe 2s ease-in-out infinite}
     @keyframes breathe{0%,100%{box-shadow:0 0 40px rgba(139,92,246,.5)}50%{box-shadow:0 0 70px rgba(139,92,246,.9)}}
-    .splash-name{color:#fff;font-size:28px;font-weight:700;letter-spacing:3px;margin-bottom:6px}
-    .splash-sub{color:#6b7280;font-size:12px;letter-spacing:1px}
     #header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;padding-top:calc(12px + env(safe-area-inset-top));background:#0f0f1a;border-bottom:1px solid #1a1a2e}
     .av-wrap{position:relative}
     .av{width:38px;height:38px;border-radius:50%;background:linear-gradient(135deg,#8b5cf6,#ec4899);display:flex;align-items:center;justify-content:center;font-size:20px}
@@ -117,8 +112,6 @@ const ECHO_HTML = `<!DOCTYPE html>
 
 </head>
 <body>
-<div id="splash"><div class="splash-av">👤</div><div class="splash-name">ECHO</div><div class="splash-sub">sempre sincera, mai gentile</div></div>
-
 <div id="notif-banner" onclick="dismissNotif()">
   <div class="nb-av">👤</div>
   <div class="nb-txt"><div class="nb-name">Echo</div><div class="nb-msg" id="nb-msg"></div></div>
@@ -573,15 +566,7 @@ async function analyzeImage(dataUrl){
 // VRM messages handled by unified Store listener
 
 window.addEventListener('load',()=>{
-  // loadCfg called after React Native sends restore message
-  // But also call it immediately in case no RN bridge (web fallback)
-  setTimeout(()=>{
-    if(!window._cfgLoaded){loadCfg();}
-  },300);
-  setTimeout(()=>{
-    document.getElementById('splash').classList.add('hide');
-    setTimeout(()=>document.getElementById('splash').style.display='none',300);
-  },400);
+  loadCfg();
   scheduleEchoInit();
 });
 
@@ -598,6 +583,7 @@ export default function App() {
   const persistedDataRef = useRef({});
   const webViewReadyRef = useRef(false);
   const dataReadyRef = useRef(false);
+  const [webViewLoaded, setWebViewLoaded] = useState(false);
 
   const sendRestoreRef = useRef(null);
 
@@ -630,6 +616,7 @@ export default function App() {
 
   const onLoad = useCallback(() => {
     webViewReadyRef.current = true;
+    setWebViewLoaded(true);
     SplashScreen.hideAsync().catch(() => {});
     sendRestore();
   }, [sendRestore]);
@@ -658,7 +645,7 @@ export default function App() {
       <StatusBar barStyle="light-content" backgroundColor="#0a0a0f" translucent={false}/>
       <WebView
         ref={webViewRef}
-        source={{ html: ECHO_HTML }}
+        source={{ html: ECHO_HTML, baseUrl: 'https://localhost' }}
         style={styles.webview}
         onLoad={onLoad}
         onMessage={onMessage}
@@ -676,6 +663,16 @@ export default function App() {
         onPermissionRequest={(request) => request.grant(request.resources)}
         onError={(e) => console.warn('WebView err:', e.nativeEvent)}
       />
+      {!webViewLoaded && (
+        <View style={styles.nativeSplash}>
+          <View style={styles.splashAvatar}>
+            <Text style={styles.splashEmoji}>👤</Text>
+          </View>
+          <Text style={styles.splashName}>ECHO</Text>
+          <Text style={styles.splashSub}>sempre sincera, mai gentile</Text>
+          <ActivityIndicator color="#8b5cf6" style={{ marginTop: 40 }} />
+        </View>
+      )}
     </View>
   );
 }
@@ -683,4 +680,22 @@ export default function App() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0a0a0f' },
   webview: { flex: 1, backgroundColor: '#0a0a0f' },
+  nativeSplash: {
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    backgroundColor: '#0a0a0f',
+    alignItems: 'center', justifyContent: 'center',
+    zIndex: 10,
+  },
+  splashAvatar: {
+    width: 100, height: 100, borderRadius: 50,
+    backgroundColor: '#8b5cf6',
+    alignItems: 'center', justifyContent: 'center',
+    marginBottom: 20,
+  },
+  splashEmoji: { fontSize: 48 },
+  splashName: {
+    color: '#fff', fontSize: 28, fontWeight: '700',
+    letterSpacing: 3, marginBottom: 6,
+  },
+  splashSub: { color: '#6b7280', fontSize: 12, letterSpacing: 1 },
 });
