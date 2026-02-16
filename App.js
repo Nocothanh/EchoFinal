@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
-import { StyleSheet, View, StatusBar, Platform, BackHandler, Text, ActivityIndicator } from 'react-native';
+import { StyleSheet, View, StatusBar, Platform, BackHandler, Text, ActivityIndicator, Modal } from 'react-native';
 import { WebView } from 'react-native-webview';
 import * as SplashScreen from 'expo-splash-screen';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -297,7 +297,7 @@ function co(e){if(e.target.id==='settings')toggleSettings();}
 
 // ─── UI helpers ───────────────────────────────────────────────────────────────
 function now(){return new Date().toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'});}
-function esc(t){return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\\n/g,'<br>');}
+function esc(t){return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');}
 function setStatus(t){document.getElementById('st').textContent=t;}
 function ar(el){el.style.height='auto';el.style.height=Math.min(el.scrollHeight,100)+'px';}
 function hk(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMsg();}}
@@ -403,6 +403,7 @@ function toggleVoice(){
   recog=new SR();recog.lang='it-IT';recog.interimResults=false;
   recog.onstart=()=>{listening=true;document.getElementById('vbtn').classList.add('on');setStatus('in ascolto...');};
   recog.onresult=e=>{document.getElementById('user-input').value=e.results[0][0].transcript;sendMsg();};
+  recog.onerror=()=>{listening=false;document.getElementById('vbtn').classList.remove('on');setStatus('online');};
   recog.onend=()=>{listening=false;document.getElementById('vbtn').classList.remove('on');setStatus('online');};
   recog.start();
 }
@@ -432,6 +433,8 @@ function nextSpeak(){if(!spQ.length){speaking=false;if(callOn&&!muted)setTimeout
 // ─── Call ─────────────────────────────────────────────────────────────────────
 function startCall(){
   if(!cfg.apiKey){addM('ai','Prima metti la API key ⚙️');return;}
+  // Stop any active voice input before starting call
+  if(listening){recog?.stop();}
   callOn=true;muted=false;cSecs=0;spQ=[];speaking=false;
   document.getElementById('call-ov').classList.add('show');
   document.getElementById('call-btn').classList.add('active');
@@ -443,6 +446,7 @@ function startCall(){
   document.getElementById('ctxt').textContent=g;
   hist.push({role:'assistant',content:g});
   qSpeak(g);
+  // listenCall is triggered automatically by nextSpeak() after greeting finishes
 }
 function listenCall(){
   if(!callOn||muted||speaking)return;
@@ -482,6 +486,7 @@ function endCall(){
   const dur=document.getElementById('ctimer').textContent;
   addM('ai','Chiamata terminata ('+dur+')');
   document.getElementById('ctimer').textContent='00:00';
+  cSecs=0;
   setStatus('online');
 }
 
@@ -516,10 +521,11 @@ async function flipCamera(){
   camFacing=camFacing==='environment'?'user':'environment';
   closeCamera();
   await new Promise(r=>setTimeout(r,300));
-  openCamera();
+  await openCamera();
 }
 async function snapPhoto(){
   const video=document.getElementById('cam-video');
+  if(!video.videoWidth||!video.videoHeight){addM('ai','Fotocamera non pronta, riprova.');return;}
   const canvas=document.createElement('canvas');
   canvas.width=video.videoWidth;canvas.height=video.videoHeight;
   canvas.getContext('2d').drawImage(video,0,0);
@@ -663,14 +669,22 @@ export default function App() {
         onPermissionRequest={(request) => request.grant(request.resources)}
         onError={(e) => console.warn('WebView err:', e.nativeEvent)}
       />
-      <View style={[styles.nativeSplash, webViewLoaded && styles.hidden]} pointerEvents={webViewLoaded ? 'none' : 'auto'}>
-        <View style={styles.splashAvatar}>
-          <Text style={styles.splashEmoji}>👤</Text>
+      <Modal
+        visible={!webViewLoaded}
+        transparent={false}
+        animationType="fade"
+        statusBarTranslucent={true}
+        onRequestClose={() => {}}
+      >
+        <View style={styles.nativeSplash}>
+          <View style={styles.splashAvatar}>
+            <Text style={styles.splashEmoji}>👤</Text>
+          </View>
+          <Text style={styles.splashName}>ECHO</Text>
+          <Text style={styles.splashSub}>sempre sincera, mai gentile</Text>
+          <ActivityIndicator color="#8b5cf6" style={{ marginTop: 40 }} />
         </View>
-        <Text style={styles.splashName}>ECHO</Text>
-        <Text style={styles.splashSub}>sempre sincera, mai gentile</Text>
-        <ActivityIndicator color="#8b5cf6" style={{ marginTop: 40 }} />
-      </View>
+      </Modal>
     </View>
   );
 }
@@ -679,10 +693,10 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0a0a0f' },
   webview: { flex: 1, backgroundColor: '#0a0a0f' },
   nativeSplash: {
-    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    flex: 1,
     backgroundColor: '#0a0a0f',
-    alignItems: 'center', justifyContent: 'center',
-    zIndex: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   splashAvatar: {
     width: 100, height: 100, borderRadius: 50,
@@ -696,5 +710,4 @@ const styles = StyleSheet.create({
     letterSpacing: 3, marginBottom: 6,
   },
   splashSub: { color: '#6b7280', fontSize: 12, letterSpacing: 1 },
-  hidden: { opacity: 0, zIndex: -1 },
 });
