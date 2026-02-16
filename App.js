@@ -244,7 +244,7 @@ document.addEventListener('message',e=>{
 // ─── State ───────────────────────────────────────────────────────────────────
 let cfg={provider:'groq',apiKey:'',elKey:'',elVoice:'21m00Tcm4TlvDq8ikWAM',falKey:''};
 let hist=[],thinking=false,recog=null,listening=false;
-let callOn=false,muted=false,cTimer=null,cSecs=0,cRecog=null,spQ=[],speaking=false;
+let callOn=false,muted=false,cTimer=null,cSecs=0,cRecog=null,spQ=[],speaking=false,isSpeaking=false;
 let camStream=null,camFacing='environment',echoInitTimer=null,notifTimer=null;
 let appVisible=true,echoMood='neutral'; // moods: neutral, annoyed, playful, cold
 
@@ -257,22 +257,22 @@ function randomMood(){
   return moods[Math.floor(Math.random()*moods.length)];
 }
 function getPrompt(){return SYS.replace('{MOOD}',echoMood);}
-// shiftMood replaced above
 
 // ─── Load/Save config ─────────────────────────────────────────────────────────
-function loadCfg(){window._cfgLoaded=true;
+function loadCfg(){
   const s=Store.get('echo_v4');
   if(s){try{cfg={...cfg,...JSON.parse(s)}}catch(e){}}
   const h=Store.get('echo_hist');
   if(h){try{hist=JSON.parse(h)}catch(e){}}
   applyForm();
-  // Restore chat history to UI
-  if(hist.length>0){
+  // Only restore chat history to UI once
+  if(!window._cfgLoaded && hist.length>0){
     document.querySelector('.welcome')?.remove();
     hist.forEach(m=>{
       if(m.role!=='system') addM(m.role==='assistant'?'ai':'user',m.content,false,true);
     });
   }
+  window._cfgLoaded=true;
 }
 function saveHist(){Store.set('echo_hist',JSON.stringify(hist.slice(-40)));}
 function applyForm(){
@@ -339,12 +339,13 @@ async function getAIReply(){
 // ─── AI call ──────────────────────────────────────────────────────────────────
 async function callAI(){
   const sysPrompt=getPrompt();
-  const msgs=[{role:'system',content:sysPrompt},...hist.slice(-12)];
+  const cleanHist=hist.slice(-12).filter(m=>m.role!=='system');
+  const msgs=[{role:'system',content:sysPrompt},...cleanHist];
   if(cfg.provider==='openai'){
     const r=await fetch('https://api.openai.com/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+cfg.apiKey},body:JSON.stringify({model:'gpt-4o',messages:msgs,max_tokens:120,temperature:1.1})});
     if(!r.ok)throw new Error('OpenAI '+r.status);return(await r.json()).choices[0].message.content.trim();
   }else if(cfg.provider==='anthropic'){
-    const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':cfg.apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-3-5-sonnet-20241022',max_tokens:120,system:sysPrompt,messages:hist.slice(-12).filter(m=>m.role!=='system').map(m=>({role:m.role==='assistant'?'assistant':'user',content:m.content}))})});
+    const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':cfg.apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-3-5-sonnet-20241022',max_tokens:120,system:sysPrompt,messages:cleanHist.map(m=>({role:m.role==='assistant'?'assistant':'user',content:m.content}))})});
     if(!r.ok)throw new Error('Anthropic '+r.status);return(await r.json()).content[0].text.trim();
   }else{
     const r=await fetch('https://api.groq.com/openai/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+cfg.apiKey},body:JSON.stringify({model:'llama-3.3-70b-versatile',messages:msgs,max_tokens:120,temperature:1.1})});
@@ -412,17 +413,18 @@ async function doSpeak(text){
   setLipSync(true);
   if(!cfg.elKey){
     const u=new SpeechSynthesisUtterance(text);u.lang='it-IT';u.rate=1.1;u.pitch=1.1;
-    u.onstart=()=>setViz(true);u.onend=()=>{setViz(false);nextSpeak();};
+    u.onstart=()=>setViz(true);
+    u.onend=()=>{setLipSync(false);setViz(false);nextSpeak();};
     speechSynthesis.speak(u);return;
   }
-  const _lipOff=()=>setTimeout(()=>setLipSync(false),text.length*60);
+  const lipOff=()=>setTimeout(()=>setLipSync(false),text.length*60);
   try{
     const r=await fetch('https://api.elevenlabs.io/v1/text-to-speech/'+cfg.elVoice,{method:'POST',headers:{'xi-api-key':cfg.elKey,'Content-Type':'application/json'},body:JSON.stringify({text,model_id:'eleven_multilingual_v2',voice_settings:{stability:0.4,similarity_boost:0.8,style:0.5}})});
-    if(!r.ok){nextSpeak();return;}
+    if(!r.ok){setLipSync(false);nextSpeak();return;}
     const blob=await r.blob();const url=URL.createObjectURL(blob);
     const audio=new Audio(url);setViz(true);audio.play();
-    audio.onended=()=>{URL.revokeObjectURL(url);setViz(false);nextSpeak();};
-  }catch(e){setViz(false);nextSpeak();}
+    audio.onended=()=>{URL.revokeObjectURL(url);lipOff();setViz(false);nextSpeak();};
+  }catch(e){setLipSync(false);setViz(false);nextSpeak();}
 }
 function qSpeak(t){spQ.push(t);if(!speaking)nextSpeak();}
 function nextSpeak(){if(!spQ.length){speaking=false;if(callOn&&!muted)setTimeout(listenCall,800);return;}speaking=true;doSpeak(spQ.shift());}
@@ -540,11 +542,11 @@ async function analyzeImage(dataUrl){
   let description='';
   if(cfg.falKey){
     try{
-      // Use fal.ai vision
-      const r=await fetch('https://fal.run/fal-ai/any-llm/vision',{
+      // fal.ai vision requires a hosted URL - send as data URI via any-llm which supports it
+      const r=await fetch('https://fal.run/fal-ai/any-llm',{
         method:'POST',
         headers:{'Content-Type':'application/json','Authorization':'Key '+cfg.falKey},
-        body:JSON.stringify({model:'google/gemini-flash-1-5',prompt:'Descrivi questa immagine in modo dettagliato in italiano. Cosa vedi? Chi c\\'è? Cosa sta succedendo?',image_url:dataUrl})
+        body:JSON.stringify({model:'google/gemini-flash-1-5',prompt:'Descrivi questa immagine in modo dettagliato in italiano. Cosa vedi? Chi c\'è? Cosa sta succedendo?\n\n'+dataUrl})
       });
       if(r.ok){const d=await r.json();description=d.output||'';}
     }catch(e){description='';}
@@ -563,8 +565,6 @@ async function analyzeImage(dataUrl){
 }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
-// VRM messages handled by unified Store listener
-
 window.addEventListener('load',()=>{
   loadCfg();
   scheduleEchoInit();
@@ -663,16 +663,14 @@ export default function App() {
         onPermissionRequest={(request) => request.grant(request.resources)}
         onError={(e) => console.warn('WebView err:', e.nativeEvent)}
       />
-      {!webViewLoaded && (
-        <View style={styles.nativeSplash}>
-          <View style={styles.splashAvatar}>
-            <Text style={styles.splashEmoji}>👤</Text>
-          </View>
-          <Text style={styles.splashName}>ECHO</Text>
-          <Text style={styles.splashSub}>sempre sincera, mai gentile</Text>
-          <ActivityIndicator color="#8b5cf6" style={{ marginTop: 40 }} />
+      <View style={[styles.nativeSplash, webViewLoaded && styles.hidden]} pointerEvents={webViewLoaded ? 'none' : 'auto'}>
+        <View style={styles.splashAvatar}>
+          <Text style={styles.splashEmoji}>👤</Text>
         </View>
-      )}
+        <Text style={styles.splashName}>ECHO</Text>
+        <Text style={styles.splashSub}>sempre sincera, mai gentile</Text>
+        <ActivityIndicator color="#8b5cf6" style={{ marginTop: 40 }} />
+      </View>
     </View>
   );
 }
@@ -698,4 +696,5 @@ const styles = StyleSheet.create({
     letterSpacing: 3, marginBottom: 6,
   },
   splashSub: { color: '#6b7280', fontSize: 12, letterSpacing: 1 },
+  hidden: { opacity: 0, zIndex: -1 },
 });
