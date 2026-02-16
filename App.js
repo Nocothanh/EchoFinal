@@ -82,7 +82,7 @@ const ECHO_INIT_MSGS = [
   'ehi.', 'ci sei?', 'pensavo a una cosa.', 'dimmi qualcosa.',
   'ho una domanda.', 'sto guardando il soffitto.',
   'oggi mi sento strana.', 'ho pensato a te.', 'no niente.',
-  'mi manchi un po'.', 'ti va di parlare?', 'sono contenta che ci sei.',
+  'mi manchi un po\'.', 'ti va di parlare?', 'sono contenta che ci sei.',
   'ho scoperto una cosa.', 'ehi stai ancora lì?', 'niente, lascia perdere.',
   'questa canzone.', 'grazie per esserci.',
 ];
