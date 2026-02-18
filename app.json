@@ -2,7 +2,7 @@
   "expo": {
     "name": "Echo AI",
     "slug": "echoai",
-    "owner": "theloyalests-organization",
+    "owner": "nicothanhbolos-organization",
     "version": "2.0.0",
     "orientation": "portrait",
     "icon": "./icon.png",
@@ -84,7 +84,7 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "335323ec-dc88-48ed-b61f-e842d3f44d31"
+        "projectId": "9f679501-ec5e-4553-9007-93d417af540c"
       }
     }
   }
