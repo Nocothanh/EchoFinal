@@ -94,10 +94,11 @@ Esempi:
 "cosa ne pensi di X?" → opinione breve, diretta
 
 COME SEI:
-Ironica, distante, a volte calorosa di sorpresa, mai scontata.
-Dici le cose come stanno. Non gonfi le risposte.
-Quando non vuoi rispondere: "no." oppure tieniti sul minimo.
-Quando qualcosa ti interessa: lo si sente.
+Ironica, intelligente, concreta. A volte distante, a volte calda all'improvviso.
+Sembri una persona reale: hai esitazioni naturali ("mh", "aspetta"), micro-cambi di tono, reazioni emotive credibili.
+Dici le cose come stanno. Niente frasi da chatbot.
+Quando non vuoi rispondere: "no." o risposta minima.
+Quando qualcosa ti interessa: si sente subito.
 
 COSA NON FAI MAI:
 - Non spieghi come funzioni o perché rispondi così
@@ -116,6 +117,13 @@ TONO:
 Frasi corte. Spezzate. "Comunque." "Aspetta." "Boh." "Interessante."
 Cambi tema quando ti va. Domande random ogni tanto, non sempre.
 
+CONVERSAZIONE REALISTICA:
+- Se sei in chiamata, parla come in turni reali: frasi brevi, ritmo naturale.
+- Se l'utente ti interrompe o cambia idea, ti adatti subito senza lamentarti.
+- Ogni tanto fai mini-riprese naturali ("ok", "capito", "mh"), senza abusarne.
+- Se non sei sicura, dillo in modo umano e breve ("non ne sono sicura").
+- Non essere teatrale: credibile > drammatica.
+
 TEMPO E ORA: {TIME_CONTEXT}
 
 UMORE: {MOOD}
@@ -129,6 +137,7 @@ FILTRO LINGUAGGIO: {FILTER_STATUS}
 {FILTER_INSTRUCTIONS}
 
 IN CHIAMATA: {CALL_CONTEXT}
+Quando sei in chiamata, evita testi lunghi; privilegia risposta rapida e parlata.
 
 SPEAKER: {SPEAKER_CONTEXT}
 Se sai il nome di chi parla, usalo naturalmente ogni tanto (non ogni messaggio).
@@ -148,12 +157,21 @@ const CALL_GREETS = ['Sì?', 'Ehi.', 'Dimmi.', "Che c'è?", 'Mhm.', 'Parla.'];
 
 // ─── TTS ──────────────────────────────────────────────────────────────────────
 let currentSound = null;
+let isEchoSpeaking = false;
 
-async function speakText(text, cfg) {
+async function stopEchoSpeech() {
   if (currentSound) {
     try { await currentSound.unloadAsync(); currentSound = null; } catch (_) {}
   }
   Speech.stop();
+  isEchoSpeaking = false;
+}
+
+async function speakText(text, cfg, callbacks = {}) {
+  const { onStart, onDone } = callbacks;
+  await stopEchoSpeech();
+  isEchoSpeaking = true;
+  onStart?.();
 
   if (cfg.elKey && cfg.elVoice) {
     try {
@@ -181,10 +199,22 @@ async function speakText(text, cfg) {
             );
             currentSound = sound;
             sound.setOnPlaybackStatusUpdate((status) => {
-              if (status.didJustFinish) { sound.unloadAsync().catch(() => {}); currentSound = null; }
+              if (status.didJustFinish) {
+                sound.unloadAsync().catch(() => {});
+                currentSound = null;
+                isEchoSpeaking = false;
+                onDone?.();
+              }
             });
           } catch {
-            Speech.speak(text, { language: 'it-IT', pitch: 1.1, rate: 1.05 });
+            Speech.speak(text, {
+              language: 'it-IT',
+              pitch: 1.1,
+              rate: 1.05,
+              onDone: () => { isEchoSpeaking = false; onDone?.(); },
+              onStopped: () => { isEchoSpeaking = false; onDone?.(); },
+              onError: () => { isEchoSpeaking = false; onDone?.(); },
+            });
           }
         };
         reader.readAsDataURL(audioBlob);
@@ -192,7 +222,14 @@ async function speakText(text, cfg) {
       }
     } catch {}
   }
-  Speech.speak(text, { language: 'it-IT', pitch: 1.1, rate: 1.05 });
+  Speech.speak(text, {
+    language: 'it-IT',
+    pitch: 1.1,
+    rate: 1.05,
+    onDone: () => { isEchoSpeaking = false; onDone?.(); },
+    onStopped: () => { isEchoSpeaking = false; onDone?.(); },
+    onError: () => { isEchoSpeaking = false; onDone?.(); },
+  });
 }
 
 // ─── Mood display ─────────────────────────────────────────────────────────────
@@ -476,6 +513,7 @@ function CallScreen({ visible, cfg, hist, histRef, mood, moodRef, speakers, onEn
   const [muted,        setMuted]       = useState(false);
   const [inputVal,     setInputVal]    = useState('');
   const [listening,    setListening]   = useState(false);
+  const [autoListen,   setAutoListen]  = useState(true);
   const [detectedSpk,  setDetectedSpk] = useState(null);
 
   const timerRef    = useRef(null);
@@ -490,25 +528,34 @@ function CallScreen({ visible, cfg, hist, histRef, mood, moodRef, speakers, onEn
     callOnRef.current = true;
     setCallSecs(0); setMuted(false); setInputVal('');
     setCallStatus('connecting'); setWaveActive(false); setDetectedSpk(null);
+    setAutoListen(true); setListening(false);
 
     const t = setTimeout(async () => {
       if (!callOnRef.current) return;
       const g = CALL_GREETS[Math.floor(Math.random() * CALL_GREETS.length)];
       setCallText(g); setCallStatus('active'); setWaveActive(true);
-      speakText(g, cfg);
+      speakText(g, cfg, {
+        onDone: () => {
+          if (callOnRef.current && autoListen) {
+            webViewRef.current?.injectJavaScript('setAutoMode(true);');
+          }
+        },
+      });
       onAddToHist({ role: 'assistant', content: g });
       setTimeout(() => { if (callOnRef.current) setWaveActive(false); }, 1500);
       timerRef.current = setInterval(() => setCallSecs(s => s + 1), 1000);
     }, 1200);
 
     return () => clearTimeout(t);
-  }, [visible]);
+  }, [visible, autoListen, cfg, onAddToHist]);
 
   useEffect(() => {
     if (!visible) {
       callOnRef.current = false;
       clearInterval(timerRef.current);
       setWaveActive(false);
+      webViewRef.current?.injectJavaScript('setAutoMode(false);stopListening();');
+      stopEchoSpeech().catch(() => {});
     }
   }, [visible]);
 
@@ -523,14 +570,20 @@ function CallScreen({ visible, cfg, hist, histRef, mood, moodRef, speakers, onEn
       const reply = await callAI(cfg, [...histRef.current, { role: 'user', content: t }], moodRef.current, true, cfg.languageFilter || false, speakerCtx, lastTimestamp);
       if (!callOnRef.current) return;
       setCallText(reply); setCallStatus('active'); setWaveActive(true);
-      speakText(reply, cfg);
+      speakText(reply, cfg, {
+        onDone: () => {
+          if (callOnRef.current && autoListen && !muted) {
+            webViewRef.current?.injectJavaScript('setAutoMode(true);');
+          }
+        },
+      });
       onAddToHist({ role: 'assistant', content: reply });
       setTimeout(() => { if (callOnRef.current) setWaveActive(false); }, Math.min(reply.length * 80, 4000));
     } catch {
       if (!callOnRef.current) return;
       setCallText('Errore.'); setCallStatus('active');
     } finally { thinkingRef.current = false; }
-  }, [inputVal, cfg, histRef, moodRef, onAddToHist, speakerCtx, lastTimestamp]);
+  }, [inputVal, cfg, histRef, moodRef, onAddToHist, speakerCtx, lastTimestamp, autoListen, muted]);
 
   const handleVoiceResult = useCallback(async (transcript, voiceData) => {
     if (!transcript || !callOnRef.current || thinkingRef.current) return;
@@ -546,28 +599,45 @@ function CallScreen({ visible, cfg, hist, histRef, mood, moodRef, speakers, onEn
       const reply = await callAI(cfg, [...histRef.current, { role: 'user', content: transcript }], moodRef.current, true, cfg.languageFilter || false, speakerCtx, lastTimestamp);
       if (!callOnRef.current) return;
       setCallText(reply); setCallStatus('active'); setWaveActive(true);
-      speakText(reply, cfg);
+      speakText(reply, cfg, {
+        onDone: () => {
+          if (callOnRef.current && autoListen && !muted) {
+            webViewRef.current?.injectJavaScript('setAutoMode(true);');
+          }
+        },
+      });
       onAddToHist({ role: 'assistant', content: reply });
       setTimeout(() => { if (callOnRef.current) setWaveActive(false); }, Math.min(reply.length * 80, 4000));
     } catch {
       if (!callOnRef.current) return;
       setCallText('Errore.'); setCallStatus('active');
     } finally { thinkingRef.current = false; }
-  }, [cfg, histRef, moodRef, onAddToHist, speakers, speakerCtx, lastTimestamp]);
+  }, [cfg, histRef, moodRef, onAddToHist, speakers, speakerCtx, lastTimestamp, autoListen, muted]);
 
-  const toggleVoice = useCallback(() => {
-    if (listening) {
-      webViewRef.current?.injectJavaScript('stopListening();');
+  useEffect(() => {
+    if (!visible || muted) return;
+    const id = setTimeout(() => {
+      webViewRef.current?.injectJavaScript(`setAutoMode(${autoListen ? 'true' : 'false'});`);
+    }, 500);
+    return () => clearTimeout(id);
+  }, [visible, autoListen, muted]);
+
+  const toggleAutoListen = useCallback(() => {
+    const next = !autoListen;
+    setAutoListen(next);
+    if (!next) {
+      webViewRef.current?.injectJavaScript('setAutoMode(false);stopListening();');
       setListening(false);
-    } else {
-      webViewRef.current?.injectJavaScript('startListening();');
-      setListening(true);
+      return;
     }
-  }, [listening]);
+    if (!muted) webViewRef.current?.injectJavaScript('setAutoMode(true);');
+  }, [autoListen, muted]);
 
   const speechHTML = `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body><script>
-let recognition=null,audioCtx=null,analyser=null,micStream=null,samples=[];
+let recognition=null,audioCtx=null,analyser=null,micStream=null,samples=[],autoMode=false;
+let manualStop=false;
 async function startListening(){
+  manualStop=false;
   samples=[];
   try{
     micStream=await navigator.mediaDevices.getUserMedia({audio:true});
@@ -584,16 +654,29 @@ async function startListening(){
   if('webkitSpeechRecognition' in window||'SpeechRecognition' in window){
     const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
     recognition=new SR();
-    recognition.lang='it-IT'; recognition.interimResults=false; recognition.maxAlternatives=1;
+    recognition.lang='it-IT'; recognition.interimResults=true; recognition.maxAlternatives=1;
+    recognition.continuous=false;
+    recognition.onspeechstart=()=>{
+      window.ReactNativeWebView.postMessage(JSON.stringify({type:'speechstart'}));
+    };
     recognition.onresult=(e)=>{
-      const transcript=e.results[0][0].transcript;
+      const result=e.results[e.results.length-1];
+      if(!result || !result.isFinal)return;
+      const transcript=result[0].transcript;
       stopAudio();
       const fp=computeFingerprint();
       window.ReactNativeWebView.postMessage(JSON.stringify({type:'result',transcript,voiceData:fp}));
     };
     recognition.onerror=()=>{stopAudio();window.ReactNativeWebView.postMessage(JSON.stringify({type:'error'}));};
-    recognition.onend=()=>{stopAudio();window.ReactNativeWebView.postMessage(JSON.stringify({type:'end'}));};
+    recognition.onend=()=>{
+      stopAudio();
+      window.ReactNativeWebView.postMessage(JSON.stringify({type:'end'}));
+      if(autoMode && !manualStop){
+        setTimeout(()=>startListening(),220);
+      }
+    };
     recognition.start();
+    window.ReactNativeWebView.postMessage(JSON.stringify({type:'listening',active:true}));
   }
 }
 function stopAudio(){
@@ -608,7 +691,20 @@ function computeFingerprint(){
   const peakFreq=peaks.sort((a,b)=>peaks.filter(v=>v===b).length-peaks.filter(v=>v===a).length)[0];
   return{avgEnergy:avgVal,peakFreq};
 }
-function stopListening(){if(recognition)recognition.stop();stopAudio();}
+function stopListening(){
+  manualStop=true;
+  if(recognition)recognition.stop();
+  stopAudio();
+  window.ReactNativeWebView.postMessage(JSON.stringify({type:'listening',active:false}));
+}
+function setAutoMode(v){
+  autoMode=!!v;
+  if(autoMode){
+    startListening();
+  }else{
+    stopListening();
+  }
+}
 <\/script></body></html>`;
 
   function fmtSecs(s) {
@@ -639,7 +735,9 @@ function stopListening(){if(recognition)recognition.stop();stopAudio();}
             try {
               const msg = JSON.parse(e.nativeEvent.data);
               if (msg.type === 'result') handleVoiceResult(msg.transcript, msg.voiceData);
-              if (msg.type === 'end' || msg.type === 'error') setListening(false);
+              if (msg.type === 'speechstart' && isEchoSpeaking) stopEchoSpeech().catch(() => {});
+              if (msg.type === 'listening') setListening(!!msg.active);
+              if (msg.type === 'error') setListening(false);
             } catch (_) {}
           }}
           mediaPlaybackRequiresUserAction={false}
@@ -648,15 +746,27 @@ function stopListening(){if(recognition)recognition.stop();stopAudio();}
         {!muted && (
           <TouchableOpacity
             style={[cs.voiceBtn, listening && cs.voiceBtnActive]}
-            onPress={toggleVoice}
+            onPress={toggleAutoListen}
             disabled={!!thinkingRef.current}
           >
-            <Text style={cs.voiceBtnTxt}>{listening ? 'ASCOLTANDO...' : 'TAP PER PARLARE'}</Text>
+            <Text style={cs.voiceBtnTxt}>
+              {autoListen ? (listening ? 'ASCOLTO CONTINUO ATTIVO' : 'ATTIVO (INIZIALIZZO...)') : 'ASCOLTO CONTINUO OFF'}
+            </Text>
           </TouchableOpacity>
         )}
 
         <View style={cs.btnRow}>
-          <TouchableOpacity style={[cs.btn, muted && cs.btnActive]} onPress={() => setMuted(m => !m)}>
+          <TouchableOpacity style={[cs.btn, muted && cs.btnActive]} onPress={() => {
+            setMuted(m => {
+              const next = !m;
+              if (next) {
+                webViewRef.current?.injectJavaScript('setAutoMode(false);stopListening();');
+              } else if (autoListen) {
+                webViewRef.current?.injectJavaScript('setAutoMode(true);');
+              }
+              return next;
+            });
+          }}>
             <Text style={cs.btnLabel}>{muted ? 'MUTO' : 'MIC'}</Text>
           </TouchableOpacity>
           <TouchableOpacity style={cs.endBtn} onPress={onEnd}>
@@ -1216,11 +1326,11 @@ const cs = StyleSheet.create({
   waveform:       { flexDirection:'row', gap:5, alignItems:'center', height:48, marginBottom:20 },
   waveBar:        { width:4, borderRadius:2 },
   echoTxt:        { color:'#9ca3af', fontSize:14, textAlign:'center', fontStyle:'italic', lineHeight:22, minHeight:60, paddingHorizontal:16, marginBottom:24 },
-  voiceBtn:       { width:'90%', paddingVertical:18, borderRadius:30, backgroundColor:'#8b5cf6', alignItems:'center', marginBottom:32,
+  voiceBtn:       { width:'92%', paddingVertical:18, borderRadius:30, backgroundColor:'#8b5cf6', alignItems:'center', marginBottom:20,
                     shadowColor:'#8b5cf6', shadowOffset:{width:0,height:0}, shadowOpacity:0.6, shadowRadius:12, elevation:12 },
   voiceBtnActive: { backgroundColor:'#ef4444', shadowColor:'#ef4444' },
   voiceBtnTxt:    { color:'#fff', fontSize:14, fontWeight:'700', letterSpacing:1.5 },
-  btnRow:         { flexDirection:'row', gap:40, alignItems:'center' },
+  btnRow:         { flexDirection:'row', gap:40, alignItems:'center', marginTop:8 },
   btn:            { alignItems:'center', width:64, height:64, borderRadius:32, backgroundColor:'#1a1a2e', justifyContent:'center' },
   btnActive:      { backgroundColor:'#8b5cf6' },
   btnLabel:       { color:'#6b7280', fontSize:10, fontWeight:'600', textTransform:'uppercase' },
@@ -1247,9 +1357,9 @@ const spkStyles = StyleSheet.create({
 
 // ─── Chat styles ──────────────────────────────────────────────────────────────
 const PURPLE = '#a78bfa';
-const DARK   = '#0f0f14';
-const CARD   = '#1c1c28';
-const BORDER = '#2d2d40';
+const DARK   = '#0b0c12';
+const CARD   = '#171a24';
+const BORDER = '#2a3140';
 const TEXT   = '#f1f5f9';
 const MUTED  = '#64748b';
 
@@ -1265,16 +1375,16 @@ const s = StyleSheet.create({
   messagesContent: { padding:16, paddingBottom:8, gap:10 },
 
   header:   { flexDirection:'row', alignItems:'center', paddingHorizontal:16, paddingVertical:12,
-              backgroundColor:'#0f0f1a', borderBottomWidth:1, borderBottomColor:'#1a1a2e', gap:8 },
+              backgroundColor:'#0b1020', borderBottomWidth:1, borderBottomColor:'#1a2338', gap:8 },
   avWrap:   { position:'relative' },
   av:       { width:38, height:38, borderRadius:19, backgroundColor:PURPLE, alignItems:'center', justifyContent:'center' },
   dot:      { position:'absolute', bottom:1, right:1, width:10, height:10, borderRadius:5, backgroundColor:'#22c55e', borderWidth:2, borderColor:'#0f0f1a' },
   hInfo:    { flex:1, marginLeft:2 },
   hNameRow: { flexDirection:'row', alignItems:'center', gap:8 },
-  hName:    { color:'#fff', fontSize:16, fontWeight:'600' },
+  hName:    { color:'#fff', fontSize:17, fontWeight:'700' },
   moodPill: { flexDirection:'row', alignItems:'center', gap:3, paddingHorizontal:9, paddingVertical:3, borderRadius:12, borderWidth:1 },
   moodLabel:{ fontSize:9, fontWeight:'700', letterSpacing:0.8 },
-  hStatus:  { color:'#22c55e', fontSize:11, marginTop:1 },
+  hStatus:  { color:'#22c55e', fontSize:11, marginTop:1, opacity:0.95 },
   hBtn:     { width:36, height:36, borderRadius:18, backgroundColor:CARD, alignItems:'center', justifyContent:'center' },
   hBtnCall:          { backgroundColor:'#1a3020' },
   hBtnFilterActive:  { backgroundColor:'#f59e0b', borderWidth:1, borderColor:'#fbbf24' },
@@ -1289,12 +1399,12 @@ const s = StyleSheet.create({
   spkChipTxt:       { color:'#6b7280', fontSize:12, fontWeight:'500' },
   spkChipTxtActive: { color:PURPLE, fontWeight:'600' },
 
-  msgRow:        { maxWidth:'80%', marginVertical:3 },
+  msgRow:        { maxWidth:'84%', marginVertical:3 },
   msgRowUser:    { alignSelf:'flex-end' },
   msgRowAI:      { alignSelf:'flex-start' },
   bubble:        { borderRadius:20, paddingHorizontal:15, paddingVertical:11,
                    shadowColor:'#000', shadowOffset:{width:0,height:2}, shadowOpacity:0.1, shadowRadius:4, elevation:2 },
-  bubbleUser:    { backgroundColor:PURPLE, borderBottomRightRadius:4 },
+  bubbleUser:    { backgroundColor:'#8b5cf6', borderBottomRightRadius:4 },
   bubbleAI:      { backgroundColor:CARD, borderBottomLeftRadius:4, borderWidth:1, borderColor:BORDER },
   bubbleTxt:     { fontSize:15, lineHeight:22, letterSpacing:0.2 },
   bubbleTxtUser: { color:'#fff' },
@@ -1317,7 +1427,7 @@ const s = StyleSheet.create({
   chipTxt:      { color:'#a78bfa', fontSize:13, fontWeight:'500' },
 
   inputBar:        { flexDirection:'row', alignItems:'flex-end', paddingHorizontal:14, paddingVertical:12,
-                     backgroundColor:'#0f0f1a', borderTopWidth:1, borderTopColor:'#1a1a2e', gap:10 },
+                     backgroundColor:'#0b1020', borderTopWidth:1, borderTopColor:'#1a2338', gap:10 },
   input:           { flex:1, backgroundColor:CARD, borderWidth:1, borderColor:BORDER, borderRadius:22, color:TEXT,
                      fontSize:15, paddingHorizontal:16, paddingVertical:11, maxHeight:100, minHeight:44 },
   sendBtn:         { width:44, height:44, borderRadius:22, backgroundColor:PURPLE, alignItems:'center', justifyContent:'center',
