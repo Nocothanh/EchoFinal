@@ -1,0 +1,1 @@
+{"title":"Integrate LLMClient and TTS into App.js","body":"This PR centralizes LLM calls and TTS through src/services/LLMClient.js and src/services/TTS.js, simplifies speakText to delegate to the TTS wrapper, and uses callProvider for AI requests. Also includes scaffold files previously added.","head":"feature/echo-mvp","base":"main"}
