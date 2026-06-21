@@ -1,13 +1,6 @@
-node_modules/
-.expo/
-dist/
-web-build/
-*.jks
-*.p8
-*.p12
-*.key
-*.mobileprovision
-*.orig.*
-web-build/
+# Ignore sensitive local credentials and build artifacts
 .env
-.env.local
+credentials.json
+echo-ai.keystore
+*.keystore
+*.p12
