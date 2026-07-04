@@ -1,6 +1,6 @@
 // Simple LLM client wrapper to centralize provider calls.
 // This module uses existing llm-resilience helpers when available.
-import { fetchWithTimeout, requestWithRetry, sanitizeModelText } from '../llm-resilience';
+import { fetchWithTimeout, requestWithRetry, sanitizeModelText } from '../../llm-resilience';
 
 export async function callProvider(cfg, messages = [], opts = {}) {
   const { isCall = false, maxTokens = isCall ? 40 : 200 } = opts;
