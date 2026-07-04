@@ -68,7 +68,7 @@
       "favicon": "./favicon.png",
       "name": "Echo AI",
       "shortName": "Echo AI",
-      "description": "Echo AI - Personalit\u00e0 Autentica",
+      "description": "Echo AI - Personalità Autentica",
       "themeColor": "#8b5cf6",
       "backgroundColor": "#8b5cf6"
     },
@@ -79,6 +79,13 @@
           "backgroundColor": "#8b5cf6",
           "image": "./splash.png",
           "resizeMode": "contain"
+        }
+      ],
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Echo usa il microfono per ascoltare la tua voce.",
+          "speechRecognitionPermission": "Echo usa il riconoscimento vocale per trascrivere i tuoi comandi."
         }
       ]
     ],
