@@ -1,6 +1,61 @@
-# Ignore sensitive local credentials and build artifacts
+# Expo
+.expo/
+dist/
+npm-debug.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*
+web-build/
 .env
+.env.local
+.env.*.local
+
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Testing
+/coverage
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Build
+build/
+dist/
+bundle/
+*.log
+
+# Keys & Credentials
 credentials.json
 echo-ai.keystore
 *.keystore
-*.p12
+.env
+.env.local
+private_key.pem
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Temp
+.DS_Store
+.cache
