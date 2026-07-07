@@ -1,31 +1,51 @@
 /**
- * CalendarService.js - Accesso e gestione calendario
- * Supporta: lettura eventi, creazione, modifica, sincronizzazione
+ * CalendarService.js - Accesso e gestione calendario.
+ * Import guardato per essere sicuro in Expo Go / assenza del modulo.
  */
 
-import * as Calendar from 'expo-calendar';
 import { logger } from '../utils/Logger';
+import { requestCalendarPermission } from '../utils/permissions';
+
+let Calendar = null;
+let loadAttempted = false;
+
+async function loadCalendarModule() {
+  if (loadAttempted) return Calendar;
+  loadAttempted = true;
+  try {
+    Calendar = await import('expo-calendar');
+  } catch (error) {
+    logger.warn('CalendarService', 'expo-calendar non disponibile', { error: error?.message });
+    Calendar = null;
+  }
+  return Calendar;
+}
 
 class CalendarService {
   constructor() {
     this.calendars = [];
-    this.events = [];
     this.initialized = false;
+    this.available = false;
   }
 
-  /**
-   * Inizializza accesso al calendario
-   */
-  async init() {
-    try {
-      const permission = await Calendar.requestCalendarPermissionsAsync();
-      if (permission.granted !== true) {
-        logger.warn('CalendarService', 'Calendar permissions not granted');
-        return false;
-      }
+  async isAvailable() {
+    return !!(await loadCalendarModule());
+  }
 
-      this.calendars = await Calendar.getCalendarsAsync();
+  async init() {
+    const mod = await loadCalendarModule();
+    if (!mod) return false;
+
+    const permission = await requestCalendarPermission();
+    if (!permission.granted) {
+      logger.warn('CalendarService', 'Calendar permissions not granted');
+      return false;
+    }
+
+    try {
+      this.calendars = await mod.getCalendarsAsync();
       this.initialized = true;
+      this.available = true;
       logger.info('CalendarService', `Loaded ${this.calendars.length} calendars`);
       return true;
     } catch (error) {
@@ -34,143 +54,51 @@ class CalendarService {
     }
   }
 
-  /**
-   * Carica eventi per data range
-   */
   async getEvents(startDate, endDate) {
+    if (!this.initialized) return [];
+    const mod = await loadCalendarModule();
+    if (!mod) return [];
     try {
-      if (this.calendars.length === 0) {
-        return [];
-      }
-
-      const calendarIds = this.calendars.map(c => c.id);
-      const events = await Calendar.getEventsAsync(calendarIds, startDate, endDate);
-
-      return events
-        .map(e => ({
-          id: e.id,
-          title: e.title,
-          startDate: new Date(e.startDate),
-          endDate: new Date(e.endDate),
-          location: e.location,
-          notes: e.notes,
-          alarms: e.alarms,
-        }))
-        .sort((a, b) => a.startDate - b.startDate);
+      const calendarIds = this.calendars.map((c) => c.id);
+      if (calendarIds.length === 0) return [];
+      const events = await mod.getEventsAsync(calendarIds, startDate, endDate);
+      return (events || []).map((e) => ({
+        id: e.id,
+        title: e.title,
+        startDate: new Date(e.startDate),
+        endDate: new Date(e.endDate),
+        location: e.location || '',
+        notes: e.notes || '',
+        allDay: !!e.allDay,
+      }));
     } catch (error) {
       logger.error('CalendarService', 'Failed to load events', error);
       return [];
     }
   }
 
-  /**
-   * Ottieni eventi di oggi
-   */
-  async getTodayEvents() {
-    const today = new Date();
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    tomorrow.setHours(0, 0, 0, 0);
-
-    return this.getEvents(today, tomorrow);
-  }
-
-  /**
-   * Ottieni prossimi eventi
-   */
-  async getUpcomingEvents(daysAhead = 7) {
-    const today = new Date();
-    const futureDate = new Date(today);
-    futureDate.setDate(futureDate.getDate() + daysAhead);
-
-    return this.getEvents(today, futureDate);
-  }
-
-  /**
-   * Crea evento da comando voice
-   */
-  async createEvent(title, startDate, endDate, details = {}) {
+  async createEvent({ title, startDate, endDate, calendarId, notes, location }) {
+    if (!this.initialized) return null;
+    const mod = await loadCalendarModule();
+    if (!mod) return null;
     try {
-      if (this.calendars.length === 0) {
-        logger.warn('CalendarService', 'No calendars available');
-        return null;
-      }
-
-      // Usa il primo calendario
-      const calendarId = this.calendars[0].id;
-
-      const eventId = await Calendar.createEventAsync(calendarId, {
+      const targetCalendar =
+        calendarId ||
+        this.calendars.find((c) => c.allowsModifications)?.id ||
+        this.calendars[0]?.id;
+      if (!targetCalendar) return null;
+      const id = await mod.createEventAsync(targetCalendar, {
         title,
         startDate,
         endDate,
-        location: details.location,
-        notes: details.notes,
-        alarms: details.alarms,
+        notes,
+        location,
       });
-
-      logger.info('CalendarService', 'Event created', { eventId, title });
-      return eventId;
+      return id;
     } catch (error) {
       logger.error('CalendarService', 'Failed to create event', error);
       return null;
     }
-  }
-
-  /**
-   * Carica evento da ID
-   */
-  async getEventDetails(eventId) {
-    try {
-      // Carica tutti gli eventi e filtra
-      const today = new Date();
-      const far = new Date();
-      far.setFullYear(far.getFullYear() + 1);
-
-      const events = await this.getEvents(today, far);
-      return events.find(e => e.id === eventId);
-    } catch (error) {
-      logger.error('CalendarService', 'Failed to get event details', error);
-      return null;
-    }
-  }
-
-  /**
-   * Aggiorna evento
-   */
-  async updateEvent(eventId, updates) {
-    try {
-      await Calendar.updateEventAsync(eventId, updates);
-      logger.info('CalendarService', 'Event updated', { eventId });
-      return true;
-    } catch (error) {
-      logger.error('CalendarService', 'Failed to update event', error);
-      return false;
-    }
-  }
-
-  /**
-   * Cancella evento
-   */
-  async deleteEvent(eventId) {
-    try {
-      await Calendar.deleteEventAsync(eventId);
-      logger.info('CalendarService', 'Event deleted', { eventId });
-      return true;
-    } catch (error) {
-      logger.error('CalendarService', 'Failed to delete event', error);
-      return false;
-    }
-  }
-
-  /**
-   * Analizza comando voice per creare evento
-   * Es: "Crea riunione domani alle 10 con Mario"
-   */
-  async parseAndCreateEvent(voiceCommand) {
-    // Semplice parser (in prod, usare NLP)
-    // TODO: Implementare parsing avanzato con regex o NLP
-    logger.warn('CalendarService', 'Voice command parsing requires NLP implementation');
-    return null;
   }
 }
 

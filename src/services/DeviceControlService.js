@@ -1,84 +1,80 @@
 /**
- * DeviceControlService.js - Controllo del dispositivo (Android/iOS)
- * NOTA: Richiede native modules e permessi specifici
- * Implementa: apertura app, gestione notifiche, screen control
+ * DeviceControlService.js - Controllo del dispositivo.
+ * expo-notifications caricato dinamicamente per essere Expo-Go-safe.
  */
 
 import { logger } from '../utils/Logger';
-import * as Notifications from 'expo-notifications';
+import { requestNotificationsPermission } from '../utils/permissions';
+
+let Notifications = null;
+let loadAttempted = false;
+
+async function loadNotifications() {
+  if (loadAttempted) return Notifications;
+  loadAttempted = true;
+  try {
+    Notifications = await import('expo-notifications');
+  } catch (error) {
+    logger.warn('DeviceControlService', 'expo-notifications non disponibile', { error: error?.message });
+    Notifications = null;
+  }
+  return Notifications;
+}
 
 class DeviceControlService {
   constructor() {
     this.canControl = false;
+    this.notificationsGranted = false;
     this.supportedActions = [];
-    this.nativeModule = null;
   }
 
-  /**
-   * Inizializza il controllo del dispositivo
-   */
   async init() {
     try {
-      // Verifica permessi e capacità
       await this._checkCapabilities();
       await this._initializeNotifications();
       this.canControl = true;
-      logger.info('DeviceControlService', 'Initialized with controls', {
+      logger.info('DeviceControlService', 'Initialized', {
         supportedActions: this.supportedActions,
+        notificationsGranted: this.notificationsGranted,
       });
     } catch (error) {
       logger.warn('DeviceControlService', 'Limited device control available', error);
     }
   }
 
-  /**
-   * Verifica capacità del dispositivo
-   */
   async _checkCapabilities() {
-    // Web/Expo capabilities
     this.supportedActions = [
-      'open_app', // Requires native module
       'send_notification',
       'open_url',
-      'play_sound',
-      'vibrate',
-      'control_screen', // Requires native module
-      'read_contacts', // Requires permissions
-      'read_calendar', // Requires permissions
-      'send_sms', // Requires permissions
+      'read_contacts',
+      'read_calendar',
     ];
   }
 
-  /**
-   * Inizializza notifiche
-   */
   async _initializeNotifications() {
-    try {
-      const permission = await Notifications.requestPermissionsAsync();
-      if (permission.granted) {
-        logger.info('DeviceControlService', 'Notification permissions granted');
-      }
-    } catch (error) {
-      logger.warn('DeviceControlService', 'Notification setup failed', error);
+    const mod = await loadNotifications();
+    if (!mod) return;
+    const permission = await requestNotificationsPermission();
+    this.notificationsGranted = !!permission.granted;
+    if (this.notificationsGranted) {
+      logger.info('DeviceControlService', 'Notification permissions granted');
+    } else {
+      logger.warn('DeviceControlService', 'Notification permissions not granted');
     }
   }
 
-  /**
-   * Invia notifica
-   */
   async sendNotification(title, body, data = {}) {
+    if (!this.notificationsGranted) {
+      logger.warn('DeviceControlService', 'Skipping notification — no permission');
+      return false;
+    }
+    const mod = await loadNotifications();
+    if (!mod) return false;
     try {
-      await Notifications.scheduleNotificationAsync({
-        content: {
-          title,
-          body,
-          data,
-          sound: true,
-          badge: 1,
-        },
+      await mod.scheduleNotificationAsync({
+        content: { title, body, data, sound: true, badge: 1 },
         trigger: { seconds: 1 },
       });
-      logger.info('DeviceControlService', 'Notification sent', { title });
       return true;
     } catch (error) {
       logger.error('DeviceControlService', 'Failed to send notification', error);
@@ -86,81 +82,23 @@ class DeviceControlService {
     }
   }
 
-  /**
-   * Vibra il dispositivo
-   */
-  async vibrate(pattern = [100, 50, 100]) {
-    // Expo non supporta nativamente vibrazione
-    // Richiede native module
-    logger.warn('DeviceControlService', 'Vibration requires native module');
-  }
-
-  /**
-   * Apri URL
-   */
   async openUrl(url) {
     try {
-      // Implementazione web
-      if (typeof window !== 'undefined') {
+      if (typeof window !== 'undefined' && window.open) {
         window.open(url, '_blank');
-        logger.info('DeviceControlService', 'URL opened', { url });
         return true;
       }
+      const Linking = (await import('react-native')).Linking;
+      await Linking.openURL(url);
+      return true;
     } catch (error) {
       logger.error('DeviceControlService', 'Failed to open URL', error);
+      return false;
     }
-    return false;
   }
 
-  /**
-   * Controllo app (richiede native bridge)
-   */
-  async launchApp(packageName) {
-    logger.warn('DeviceControlService', 'App launching requires native module', { packageName });
-    // TODO: Implementare con native module
-    return false;
-  }
-
-  /**
-   * Leggi contatti (richiede permessi)
-   */
-  async readContacts() {
-    logger.warn('DeviceControlService', 'Reading contacts requires native module and permissions');
-    // TODO: Implementare con Contacts API
-    return [];
-  }
-
-  /**
-   * Leggi calendario (richiede permessi)
-   */
-  async readCalendar() {
-    logger.warn('DeviceControlService', 'Reading calendar requires native module and permissions');
-    // TODO: Implementare con Calendar API
-    return [];
-  }
-
-  /**
-   * Invia SMS (richiede permessi)
-   */
-  async sendSMS(phoneNumber, message) {
-    logger.warn('DeviceControlService', 'SMS sending requires native module and permissions');
-    // TODO: Implementare con SMS API
-    return false;
-  }
-
-  /**
-   * Ottieni azioni supportate
-   */
-  getAvailableActions() {
-    return this.supportedActions;
-  }
-
-  /**
-   * Verifica se azione è supportata
-   */
-  isActionSupported(action) {
-    return this.supportedActions.includes(action);
-  }
+  getAvailableActions() { return this.supportedActions; }
+  isActionSupported(action) { return this.supportedActions.includes(action); }
 }
 
 export const deviceControlService = new DeviceControlService();
