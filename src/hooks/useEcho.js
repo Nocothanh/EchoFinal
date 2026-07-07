@@ -16,6 +16,27 @@ const DEFAULT_CONFIG = {
   lang: 'it-IT',
 };
 
+// Split streamed text into speech-friendly segments at sentence/clause
+// boundaries. Returns { segments, rest }.
+const SEG_BOUNDARY = /([.!?…]+["'”)\]]?\s+|[:;,]\s+(?=\S{6,}))/;
+function extractSegments(buffer) {
+  const segments = [];
+  let rest = buffer;
+  // Simple loop: peel off matches from the start.
+  while (true) {
+    const m = rest.match(SEG_BOUNDARY);
+    if (!m) break;
+    const end = m.index + m[0].length;
+    const chunk = rest.slice(0, end).trim();
+    if (chunk) segments.push(chunk);
+    rest = rest.slice(end);
+    // Only flush on strong (sentence) boundaries eagerly; keep short clauses
+    // buffered unless they've grown long.
+    if (!/[.!?…]/.test(m[0]) && rest.length < 40) break;
+  }
+  return { segments, rest };
+}
+
 export function useEcho() {
   const [messages, setMessages] = useState([]);
   const [status, setStatus] = useState('idle');
@@ -75,6 +96,53 @@ export function useEcho() {
       busyRef.current = true;
       setError('');
 
+      // Streamed assistant message state.
+      let streamBuffer = '';
+      let fullText = '';
+      let assistantAdded = false;
+
+      const ttsCfg = {
+        elKey: config.elKey,
+        elVoice: config.elVoice,
+        lang: config.lang,
+      };
+
+      const flushSegments = (force = false) => {
+        const { segments, rest } = extractSegments(streamBuffer);
+        for (const seg of segments) {
+          if (status !== 'speaking') setStatus('speaking');
+          speakText(seg, ttsCfg, {
+            onDone: () => setStatus('idle'),
+          });
+        }
+        streamBuffer = force ? '' : rest;
+        if (force && rest.trim()) {
+          setStatus('speaking');
+          speakText(rest.trim(), ttsCfg, { onDone: () => setStatus('idle') });
+        }
+      };
+
+      const onChunk = (delta) => {
+        if (!delta) return;
+        fullText += delta;
+        streamBuffer += delta;
+
+        // Update / insert the in-progress assistant message in the chat log.
+        if (!assistantAdded) {
+          assistantAdded = true;
+          conversationManager.addMessage({ role: 'assistant', content: fullText });
+        } else {
+          try {
+            conversationManager.updateLastMessage?.({ role: 'assistant', content: fullText });
+          } catch (_) {
+            /* fallback below */
+          }
+        }
+        syncMessages();
+
+        flushSegments(false);
+      };
+
       try {
         await stopSpeech();
         await VoiceInput.stop();
@@ -97,28 +165,26 @@ export function useEcho() {
             systemPrompt,
           },
           contextMessages,
-          { isCall: false },
+          { isCall: false, stream: true, onChunk },
         );
 
-        await conversationManager.addMessage({ role: 'assistant', content: reply });
+        // Ensure the final message reflects the fully-sanitized reply.
+        if (!assistantAdded) {
+          await conversationManager.addMessage({ role: 'assistant', content: reply });
+        } else if (conversationManager.updateLastMessage) {
+          try {
+            conversationManager.updateLastMessage({ role: 'assistant', content: reply });
+          } catch (_) {}
+        }
         syncMessages();
-        setStatus('speaking');
 
-        await speakText(
-          reply,
-          {
-            elKey: config.elKey,
-            elVoice: config.elVoice,
-            lang: config.lang,
-          },
-          {
-            onDone: () => setStatus('idle'),
-          },
-        );
+        // Flush any trailing buffered text as a final segment.
+        flushSegments(true);
       } catch (cause) {
         const message = cause?.message || 'Si è verificato un errore.';
         setError(message);
         setStatus('idle');
+        await stopSpeech();
         await conversationManager.addMessage({
           role: 'assistant',
           content: 'Ho incontrato un errore. Riprova tra poco.',
@@ -128,7 +194,7 @@ export function useEcho() {
         busyRef.current = false;
       }
     },
-    [config, syncMessages],
+    [config, status, syncMessages],
   );
 
   const startListening = useCallback(async () => {

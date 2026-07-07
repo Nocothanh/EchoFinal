@@ -1,37 +1,60 @@
 /**
- * ContactService.js - Accesso e gestione contatti
- * Supporta: lettura contatti, ricerca, mapping con applicazioni
+ * ContactService.js - Accesso e gestione contatti.
+ * Guarded dynamic import: se `expo-contacts` non è disponibile (Expo Go)
+ * o il permesso è negato, tutte le operazioni ritornano valori vuoti
+ * senza mai effettuare chiamate native.
  */
 
-import * as Contacts from 'expo-contacts';
 import { logger } from '../utils/Logger';
-import { storageService } from './StorageService';
+import { requestContactsPermission } from '../utils/permissions';
+
+let Contacts = null;
+let loadAttempted = false;
+
+async function loadContactsModule() {
+  if (loadAttempted) return Contacts;
+  loadAttempted = true;
+  try {
+    Contacts = await import('expo-contacts');
+  } catch (error) {
+    logger.warn('ContactService', 'expo-contacts non disponibile', { error: error?.message });
+    Contacts = null;
+  }
+  return Contacts;
+}
 
 class ContactService {
   constructor() {
     this.contacts = [];
     this.contactsLoaded = false;
-    this.cached = new Map();
+    this.available = false;
   }
 
-  /**
-   * Carica contatti dal dispositivo
-   */
-  async loadContacts() {
-    try {
-      const permission = await Contacts.requestPermissionsAsync();
-      if (permission.granted !== true) {
-        logger.warn('ContactService', 'Contact permissions not granted');
-        return [];
-      }
+  async isAvailable() {
+    return !!(await loadContactsModule());
+  }
 
-      const { data } = await Contacts.getContactsAsync({
-        fields: [Contacts.Fields.Emails, Contacts.Fields.PhoneNumbers],
+  async loadContacts() {
+    const mod = await loadContactsModule();
+    if (!mod) {
+      logger.warn('ContactService', 'Skipping contacts load — module unavailable');
+      return [];
+    }
+
+    const permission = await requestContactsPermission();
+    if (!permission.granted) {
+      logger.warn('ContactService', 'Contact permissions not granted');
+      return [];
+    }
+
+    try {
+      const { data } = await mod.getContactsAsync({
+        fields: [mod.Fields.Emails, mod.Fields.PhoneNumbers],
       });
 
-      this.contacts = data
-        .filter(c => c.phoneNumbers && c.phoneNumbers.length > 0)
-        .map(c => ({
+      this.contacts = (data || [])
+        .filter((c) => c.phoneNumbers && c.phoneNumbers.length > 0)
+        .map((c) => ({
           id: c.id,
           name: c.name || 'Unknown',
           phones: c.phoneNumbers || [],
@@ -40,6 +63,7 @@ class ContactService {
         }));
 
       this.contactsLoaded = true;
+      this.available = true;
       logger.info('ContactService', `Loaded ${this.contacts.length} contacts`);
       return this.contacts;
     } catch (error) {
@@ -48,68 +72,36 @@ class ContactService {
     }
   }
 
-  /**
-   * Cerca contatto per nome
-   */
   searchByName(query) {
-    const lowerQuery = query.toLowerCase();
-    return this.contacts.filter(c =>
-      c.name.toLowerCase().includes(lowerQuery)
-    );
+    const q = String(query || '').toLowerCase();
+    return this.contacts.filter((c) => c.name.toLowerCase().includes(q));
   }
 
-  /**
-   * Cerca contatto per numero di telefono
-   */
   searchByPhone(phoneNumber) {
-    const normalized = phoneNumber.replace(/\D/g, '');
-    return this.contacts.filter(c =>
-      c.phones.some(p => p.number.replace(/\D/g, '') === normalized)
+    const normalized = String(phoneNumber || '').replace(/\D/g, '');
+    return this.contacts.filter((c) =>
+      c.phones.some((p) => p.number.replace(/\D/g, '') === normalized),
     );
   }
 
-  /**
-   * Ottieni contatto per ID
-   */
   getContact(contactId) {
-    return this.contacts.find(c => c.id === contactId);
+    return this.contacts.find((c) => c.id === contactId);
   }
 
-  /**
-   * Ottieni numero principale di un contatto
-   */
   getPrimaryPhone(contact) {
-    if (!contact || !contact.phones || contact.phones.length === 0) {
-      return null;
-    }
-    // Preferisci "mobile" rispetto ad altri tipi
-    const mobile = contact.phones.find(p => p.label === 'mobile');
+    if (!contact?.phones?.length) return null;
+    const mobile = contact.phones.find((p) => p.label === 'mobile');
     return mobile ? mobile.number : contact.phones[0].number;
   }
 
-  /**
-   * Risolvi contatto da comando voice
-   * Es: "Chiama Mario" → trova numero di Mario
-   */
   async resolveContact(voiceInput) {
     if (!this.contactsLoaded) {
       await this.loadContacts();
     }
-
     const matches = this.searchByName(voiceInput);
-    if (matches.length === 0) {
-      logger.warn('ContactService', `No contact found for: ${voiceInput}`);
-      return null;
-    }
-
-    // Se è un match esatto, usa quello
-    const exactMatch = matches.find(c => c.name.toLowerCase() === voiceInput.toLowerCase());
-    if (exactMatch) {
-      return exactMatch;
-    }
-
-    // Altrimenti ritorna il primo match
-    return matches[0];
+    if (matches.length === 0) return null;
+    const exact = matches.find((c) => c.name.toLowerCase() === String(voiceInput).toLowerCase());
+    return exact || matches[0];
   }
 }
 

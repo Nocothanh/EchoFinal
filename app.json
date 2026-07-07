@@ -24,7 +24,12 @@
         "NSCameraUsageDescription": "Echo AI uses the camera so Echo can see photos you share.",
         "UIBackgroundModes": [
           "audio"
-        ]
+        ],
+        "NSContactsUsageDescription": "Echo AI usa i contatti per aiutarti a chiamare o messaggiare le persone giuste.",
+        "NSCalendarsUsageDescription": "Echo AI usa il calendario per leggere e creare eventi in tuo nome.",
+        "NSRemindersUsageDescription": "Echo AI usa i promemoria per gestire i tuoi task.",
+        "NSPhotoLibraryUsageDescription": "Echo AI accede alla libreria foto per condividere immagini durante la conversazione.",
+        "NSPhotoLibraryAddUsageDescription": "Echo AI salva foto generate o ricevute nella tua libreria."
       }
     },
     "android": {
@@ -35,17 +40,24 @@
       "package": "com.echo.ai",
       "versionCode": 1,
       "permissions": [
-        "android.permission.INTERNET",
         "android.permission.ACCESS_NETWORK_STATE",
         "android.permission.ACCESS_WIFI_STATE",
-        "android.permission.RECORD_AUDIO",
-        "android.permission.MODIFY_AUDIO_SETTINGS",
         "android.permission.CAMERA",
-        "android.permission.READ_EXTERNAL_STORAGE",
-        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.INTERNET",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
         "android.permission.POST_NOTIFICATIONS",
+        "android.permission.READ_CALENDAR",
+        "android.permission.READ_CONTACTS",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_AUDIO",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.RECORD_AUDIO",
         "android.permission.VIBRATE",
-        "android.permission.WAKE_LOCK"
+        "android.permission.WAKE_LOCK",
+        "android.permission.WRITE_CALENDAR",
+        "android.permission.WRITE_CONTACTS",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
       ],
       "intentFilters": [
         {
@@ -68,7 +80,7 @@
       "favicon": "./favicon.png",
       "name": "Echo AI",
       "shortName": "Echo AI",
-      "description": "Echo AI - Personalità Autentica",
+      "description": "Echo AI - Personalit\u00e0 Autentica",
       "themeColor": "#8b5cf6",
       "backgroundColor": "#8b5cf6"
     },
@@ -86,6 +98,34 @@
         {
           "microphonePermission": "Echo usa il microfono per ascoltare la tua voce.",
           "speechRecognitionPermission": "Echo usa il riconoscimento vocale per trascrivere i tuoi comandi."
+        }
+      ],
+      [
+        "expo-contacts",
+        {
+          "contactsPermission": "Echo AI usa i contatti per aiutarti a chiamare o messaggiare le persone giuste."
+        }
+      ],
+      [
+        "expo-calendar",
+        {
+          "calendarPermission": "Echo AI usa il calendario per leggere e creare eventi in tuo nome.",
+          "remindersPermission": "Echo AI usa i promemoria per gestire i tuoi task."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./adaptive-icon.png",
+          "color": "#8b5cf6"
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Echo AI accede alla libreria foto per condividere immagini.",
+          "savePhotosPermission": "Echo AI salva foto nella tua libreria.",
+          "isAccessMediaLocationEnabled": false
         }
       ]
     ],
