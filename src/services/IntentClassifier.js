@@ -116,6 +116,43 @@ const INTENT_CATEGORIES = {
       /(?:riepilogo|digest|riepilogo.notifiche)/i
     ],
     confidence: 0.9
+  },
+  TRANSLATION: {
+    patterns: [
+      /(?:traduci|translate|traduire|übersetze)\s+(.+?)(?:\s+(?:in|to|en|auf)\s+(\S+))?/i,
+      /(?:come.si.dice|how.do.you.say)\s+(.+?)\s+(?:in|to)\s+(\S+)/i
+    ],
+    confidence: 0.85
+  },
+  CALCULATOR: {
+    patterns: [
+      /(?:calcola|calculate|quanto.fa|what.is|quanto.e)\s+(.+)/i,
+      /(\d+(?:\.\d+)?)\s*([+\-×÷^])\s*(\d+)/i,
+      /(\d+(?:\.\d+)?)\s*(\w+)\s+(?:in|to|a)\s+(\w+)/i
+    ],
+    confidence: 0.8
+  },
+  CLIPBOARD: {
+    patterns: [
+      /(?:copia|copy|clipboard)\s+(.+)/i,
+      /(?:incolla|paste|what.typed|cosa.c.e)/i,
+      /(?:codice.otp|otp.code|codice.verifica)/i
+    ],
+    confidence: 0.85
+  },
+  CONTACTS: {
+    patterns: [
+      /(?:cerca.contatto|find.contact|search.contact)\s+(.+)/i,
+      /(?:chi.e|who.is)\s+(.+)/i,
+      /(?:contatti|contacts|rubrica)/i
+    ],
+    confidence: 0.8
+  },
+  SCREENSHOT: {
+    patterns: [
+      /(?:screenshot|cattura.schermo|schermata|take.screenshot)/i
+    ],
+    confidence: 0.95
   }
 };
 
@@ -262,7 +299,8 @@ class IntentClassifierService {
   canHandleLocally(intent) {
     const localIntents = [
       'DEVICE_CONTROL', 'APP_LAUNCH', 'CALL', 'TIMER', 'ALARM',
-      'WELLNESS', 'NOTIFICATIONS'
+      'WELLNESS', 'NOTIFICATIONS', 'TRANSLATION', 'CALCULATOR',
+      'CLIPBOARD', 'SCREENSHOT'
     ];
     return localIntents.includes(intent);
   }
