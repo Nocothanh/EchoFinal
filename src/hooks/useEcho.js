@@ -23,6 +23,12 @@ import { functionCallingService } from '../services/FunctionCallingService';
 import { wakeWordService } from '../services/WakeWordService';
 import { bargeInHandler } from '../services/BargeInHandler';
 import { dailyBriefing } from '../services/DailyBriefing';
+import { notificationTriage } from '../services/NotificationTriage';
+import { webSearchService } from '../services/WebSearchService';
+import { deepLinkService } from '../services/DeepLinkService';
+import { wellnessService } from '../services/WellnessService';
+import { mcpBridge } from '../services/MCPBridge';
+import { intentClassifier } from '../services/IntentClassifier';
 
 const DEFAULT_CONFIG = {
   provider: 'groq',
@@ -183,7 +189,20 @@ export function useEcho() {
     const sentimentResult = sentimentService.analyzeSentiment(text);
     setSentiment(sentimentResult);
 
-    // Controlla se il testo contiene comandi che il LLM potrebbe voler eseguire
+    // Intent classification on-device
+    const classification = intentClassifier.classify(text);
+    if (classification && !classification.needsLLM && intentClassifier.canHandleLocally(classification.intent)) {
+      const localResult = await handleLocalIntent(classification, text);
+      if (localResult) return localResult;
+    }
+
+    // Deep links (play/search in apps)
+    const deepCmd = deepLinkService.parseCommand(text);
+    if (deepCmd) {
+      const deepResult = await deepLinkService.execute(deepCmd);
+      if (deepResult.success) return deepResult.message;
+    }
+
     const lowerText = text.toLowerCase();
     
     // Comandi meteo
@@ -226,8 +245,108 @@ export function useEcho() {
       }
     }
 
+    // Notifiche - riepilogo
+    if (lowerText.includes('notifiche') || lowerText.includes('notifications') || lowerText.includes('what did i miss') || lowerText.includes('che ho perso')) {
+      return notificationTriage.generateDigestSummary(24);
+    }
+
+    // Codice 2FA
+    if (lowerText.includes('2fa') || lowerText.includes('codice') || lowerText.includes('code') || lowerText.includes('otp')) {
+      const code = notificationTriage.getLatest2FACode();
+      if (code) {
+        return `Il codice 2FA più recente è ${code.code} da ${code.from}`;
+      }
+      return 'Non ho trovato codici 2FA recenti nelle notifiche.';
+    }
+
+    // Web search
+    if (lowerText.includes('cerca') || lowerText.includes('search') || lowerText.includes('google') || lowerText.includes('trova')) {
+      const query = lowerText
+        .replace(/cerca|search|google|trova|su|on|in|per|me|mi/g, '')
+        .trim();
+      if (query.length > 2) {
+        const result = await webSearchService.search(query);
+        if (result.success) {
+          return webSearchService.formatSearchResults(result);
+        }
+      }
+    }
+
+    // Wellness
+    if (lowerText.includes('respira') || lowerText.includes('breath') || lowerText.includes('medita') || lowerText.includes('calma')) {
+      const pattern = lowerText.includes('box') ? 'box' : '4-7-8';
+      const result = await wellnessService.startBreathing(pattern, 5);
+      if (result.success) return result.message;
+    }
+
+    if (lowerText.includes('pioggia') || lowerText.includes('rain') || lowerText.includes('oceano') || lowerText.includes('ocean') || lowerText.includes('suono') || lowerText.includes('ambient')) {
+      let soundId = 'rain';
+      if (lowerText.includes('oceano') || lowerText.includes('ocean')) soundId = 'ocean';
+      else if (lowerText.includes('foresta') || lowerText.includes('forest')) soundId = 'forest';
+      else if (lowerText.includes('fuoco') || lowerText.includes('fire')) soundId = 'fire';
+      else if (lowerText.includes('notte') || lowerText.includes('night')) soundId = 'night';
+      const result = await wellnessService.playAmbientSound(soundId);
+      if (result.success) return result.message;
+    }
+
+    if (lowerText.includes('ferma suono') || lowerText.includes('stop sound') || lowerText.includes('basta')) {
+      const result = await wellnessService.stopAmbientSound();
+      return result.message;
+    }
+
     return null;
   }, []);
+
+  // Gestisci comandi locali senza LLM
+  const handleLocalIntent = async (classification, text) => {
+    const { intent, entities, action } = classification;
+
+    switch (intent) {
+      case 'DEVICE_CONTROL': {
+        const device = entities.device || action;
+        if (device === 'flashlight' || device === 'torcia') {
+          const result = await quickActions.toggleFlashlight();
+          return result.success ? 'Torcia accesa/spegnita' : result.error;
+        }
+        if (device === 'volume') {
+          if (text.toLowerCase().includes('alza') || text.toLowerCase().includes('up') || text.toLowerCase().includes('high')) {
+            const result = await functionCallingService.executeFunction('control_device', { action: 'volume_up' }, {});
+            return result.success ? 'Volume aumentato' : result.error;
+          }
+          if (text.toLowerCase().includes('abbassa') || text.toLowerCase().includes('down') || text.toLowerCase().includes('low')) {
+            const result = await functionCallingService.executeFunction('control_device', { action: 'volume_down' }, {});
+            return result.success ? 'Volume diminuito' : result.error;
+          }
+        }
+        if (device === 'luminosita' || device === 'brightness' || device === 'schermo') {
+          if (text.includes('alza') || text.includes('up')) {
+            const result = await functionCallingService.executeFunction('control_device', { action: 'brightness_up' }, {});
+            return result.success ? 'Luminosità aumentata' : result.error;
+          }
+          if (text.includes('abbassa') || text.includes('down')) {
+            const result = await functionCallingService.executeFunction('control_device', { action: 'brightness_down' }, {});
+            return result.success ? 'Luminosità diminuita' : result.error;
+          }
+        }
+        break;
+      }
+      case 'TIME': {
+        const now = new Date();
+        return `Sono le ${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+      }
+      case 'DATE': {
+        const now = new Date();
+        const days = ['Domenica', 'Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì', 'Sabato'];
+        return `Oggi è ${days[now.getDay()]} ${now.getDate()}/${now.getMonth() + 1}/${now.getFullYear()}`;
+      }
+      case 'ALARM':
+      case 'TIMER': {
+        return `Ho capito, imposto ${intent === 'ALARM' ? 'la sveglia' : 'il timer'}. Puoi specificare l'orario o la durata?`;
+      }
+    }
+
+    return null;
+  };
 
   const sendText = useCallback(
     async (rawText) => {
