@@ -1,11 +1,19 @@
+/**
+ * useEcho.js - Hook principale JARVIS
+ * Integra context awareness, quick actions, notifiche proattive
+ */
+
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { envLoader } from '../services/EnvLoader';
 import { callProvider } from '../services/LLMClient';
-import { generateEchoPersonaPrompt } from '../../persona-generator-develop';
+import { generateEchoPersonaPrompt, getRandomGreeting, getRandomThinking, getRandomError, getRandomHumor, getRandomProactive } from '../../persona-generator-develop';
 import { speak as speakText, stopSpeech } from '../services/TTS';
 import { conversationManager } from '../services/ConversationManager';
 import { VoiceInput } from '../services/VoiceInput';
+import { contextEngine } from '../services/ContextEngine';
+import { quickActions } from '../services/QuickActions';
+import { proactiveNotifications } from '../services/ProactiveNotifications';
 
 const DEFAULT_CONFIG = {
   provider: 'groq',
@@ -18,7 +26,7 @@ const DEFAULT_CONFIG = {
 
 // Split streamed text into speech-friendly segments at sentence/clause
 // boundaries. Returns { segments, rest }.
-const SEG_BOUNDARY = /([.!?…]+["'”)\]]?\s+|[:;,]\s+(?=\S{6,}))/;
+const SEG_BOUNDARY = /([.!?…]+["'")\]]?\s+|[:;,]\s+(?=\S{6,}))/;
 function extractSegments(buffer) {
   const segments = [];
   let rest = buffer;
@@ -44,15 +52,22 @@ export function useEcho() {
   const [voiceAvailable, setVoiceAvailable] = useState(false);
   const [error, setError] = useState('');
   const [config, setConfig] = useState(DEFAULT_CONFIG);
+  const [context, setContext] = useState(null);
+  const [audioLevel, setAudioLevel] = useState(0);
+  const [userName, setUserName] = useState(null);
   const busyRef = useRef(false);
+  const proactiveTimerRef = useRef(null);
 
   useEffect(() => {
     let mounted = true;
 
     (async () => {
       try {
+        // Inizializza tutti i servizi
         await envLoader.init();
         await conversationManager.init();
+        await contextEngine.init();
+        await proactiveNotifications.init();
 
         if (!mounted) {
           return;
@@ -67,8 +82,13 @@ export function useEcho() {
           lang: 'it-IT',
         });
 
+        setContext(contextEngine.getFullContext());
         setMessages(conversationManager.getMessages());
         setVoiceAvailable(await VoiceInput.isAvailable());
+
+        // Avvia notifiche proattive
+        startProactiveNotifications();
+
       } catch (cause) {
         if (!mounted) {
           return;
@@ -77,14 +97,56 @@ export function useEcho() {
       }
     })();
 
+    // Ascolta cambiamenti di contesto
+    const unsubscribe = contextEngine.addListener((newContext) => {
+      setContext(contextEngine.getFullContext());
+    });
+
     return () => {
       mounted = false;
+      unsubscribe();
+      if (proactiveTimerRef.current) {
+        clearInterval(proactiveTimerRef.current);
+      }
     };
+  }, []);
+
+  // Notifiche proattive
+  const startProactiveNotifications = useCallback(() => {
+    // Controlla ogni 30 minuti se mandare notifiche
+    proactiveTimerRef.current = setInterval(async () => {
+      const suggestion = contextEngine.getProactiveSuggestion();
+      if (suggestion) {
+        await proactiveNotifications.sendSuggestionNotification();
+      }
+    }, 30 * 60 * 1000); // 30 minuti
   }, []);
 
   const syncMessages = useCallback(() => {
     setMessages(conversationManager.getMessages());
   }, []);
+
+  // Gestisci comandi rapidi
+  const handleQuickCommand = useCallback(async (text) => {
+    const command = quickActions.detectCommand(text);
+    if (command) {
+      setStatus('thinking');
+      
+      const result = await quickActions.executeCommand(command);
+      
+      if (result.success) {
+        const response = `Perfetto! ${result.message}`;
+        await conversationManager.addMessage({ role: 'assistant', content: response });
+        syncMessages();
+        speakText(response, { lang: config.lang });
+        return true;
+      } else {
+        // Lascia che LLM gestisca l'errore
+        return false;
+      }
+    }
+    return false;
+  }, [config.lang, syncMessages]);
 
   const sendText = useCallback(
     async (rawText) => {
@@ -146,14 +208,29 @@ export function useEcho() {
       try {
         await stopSpeech();
         await VoiceInput.stop();
+        
+        // Registra interazione nel contesto
+        await contextEngine.recordInteraction();
+        
         await conversationManager.addMessage({ role: 'user', content: text });
         syncMessages();
         setInput('');
         setStatus('thinking');
 
+        // Prova a gestire come comando rapido
+        const isQuickCommand = await handleQuickCommand(text);
+        if (isQuickCommand) {
+          busyRef.current = false;
+          return;
+        }
+
+        // Genera prompt con contesto JARVIS
+        const contextData = contextEngine.getFullContext();
         const systemPrompt = generateEchoPersonaPrompt({
           lastUserMessage: text,
           isCall: false,
+          contextData,
+          userName,
         });
 
         const contextMessages = conversationManager.getContextMessages(12);
@@ -185,16 +262,19 @@ export function useEcho() {
         setError(message);
         setStatus('idle');
         await stopSpeech();
+        
+        // Usa frase di errore JARVIS
+        const errorMessage = getRandomError();
         await conversationManager.addMessage({
           role: 'assistant',
-          content: 'Ho incontrato un errore. Riprova tra poco.',
+          content: `${errorMessage} ${message}`,
         });
         syncMessages();
       } finally {
         busyRef.current = false;
       }
     },
-    [config, status, syncMessages],
+    [config, status, syncMessages, userName, handleQuickCommand],
   );
 
   const startListening = useCallback(async () => {
@@ -240,6 +320,20 @@ export function useEcho() {
     sendText(input);
   }, [input, sendText]);
 
+  // Saluta l'utente
+  const greetUser = useCallback(async () => {
+    const greeting = getRandomGreeting();
+    await conversationManager.addMessage({ role: 'assistant', content: greeting });
+    syncMessages();
+    speakText(greeting, { lang: config.lang });
+  }, [config.lang, syncMessages]);
+
+  // Imposta nome utente
+  const setUserNameCallback = useCallback((name) => {
+    setUserName(name);
+    contextEngine.updatePreference('userName', name);
+  }, []);
+
   const isDisabled = useMemo(() => status === 'thinking' || status === 'speaking', [status]);
   const isThinking = status === 'thinking';
   const isListening = status === 'listening';
@@ -260,6 +354,11 @@ export function useEcho() {
     sendFromInput,
     startListening,
     stopListening,
+    context,
+    audioLevel,
+    userName,
+    setUserName: setUserNameCallback,
+    greetUser,
   };
 }
 
