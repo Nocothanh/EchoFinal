@@ -4,7 +4,6 @@
  */
 
 import * as Notifications from 'expo-notifications';
-import * as Haptics from 'expo-haptics';
 
 class AlarmService {
   constructor() {

@@ -59,7 +59,7 @@ class CalculatorService {
         .replace(/abs\(([^)]+)\)/g, 'Math.abs($1)')
         .replace(/pow\(([^,]+),([^)]+)\)/g, 'Math.pow($1,$2)');
 
-      if (!/^[\d\s\+\-\*\/\.\(\)%eMath.,sqrtintanologabspow]+$/.test(sanitized)) {
+      if (!/^[\d\s\+\-\*\/\.\(\)%eEPIMath.,sqrtintanologabspow]+$/.test(sanitized)) {
         return { success: false, error: 'Invalid expression' };
       }
 

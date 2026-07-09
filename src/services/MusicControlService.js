@@ -5,8 +5,6 @@
 
 import { Linking, Platform } from 'react-native';
 import * as IntentLauncher from 'expo-intent-launcher';
-import * as MediaLibrary from 'expo-media-library';
-import * as Haptics from 'expo-haptics';
 
 class MusicControlService {
   constructor() {

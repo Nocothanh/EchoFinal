@@ -3,7 +3,6 @@
  * Capture and analyze screen content using view-shot
  */
 
-import { Platform } from 'react-native';
 import * as ScreenCapture from 'expo-screen-capture';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system';
