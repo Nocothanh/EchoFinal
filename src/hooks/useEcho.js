@@ -29,6 +29,17 @@ import { deepLinkService } from '../services/DeepLinkService';
 import { wellnessService } from '../services/WellnessService';
 import { mcpBridge } from '../services/MCPBridge';
 import { intentClassifier } from '../services/IntentClassifier';
+import { timerService } from '../services/TimerService';
+import { alarmService } from '../services/AlarmService';
+import { calendarService } from '../services/CalendarService';
+import { smsService } from '../services/SMSService';
+import { reminderService } from '../services/ReminderService';
+import { translationService } from '../services/TranslationService';
+import { clipboardService } from '../services/ClipboardService';
+import { calculatorService } from '../services/CalculatorService';
+import { musicControlService } from '../services/MusicControlService';
+import { contactsService } from '../services/ContactsService';
+import { screenshotService } from '../services/ScreenshotService';
 
 const DEFAULT_CONFIG = {
   provider: 'groq',
@@ -91,6 +102,17 @@ export function useEcho() {
         await sentimentService.init();
         await functionCallingService.init();
         await dailyBriefing.init();
+        await timerService.init();
+        await alarmService.init();
+        await calendarService.init();
+        await smsService.init();
+        await reminderService.init();
+        await translationService.init();
+        await clipboardService.init();
+        await calculatorService.init();
+        await musicControlService.init();
+        await contactsService.init();
+        await screenshotService.init();
 
         if (!mounted) {
           return;
@@ -294,6 +316,82 @@ export function useEcho() {
       return result.message;
     }
 
+    // Timer commands
+    if (lowerText.includes('timer') || lowerText.includes('countdown') || lowerText.includes('cronometro')) {
+      const duration = timerService.parseNaturalDuration(lowerText);
+      if (duration > 0) {
+        const result = timerService.createTimer('Timer vocale', duration);
+        if (result.success) {
+          timerService.startTimer(result.timer.id);
+          return `Timer avviato per ${Math.floor(duration / 60)} minuti e ${duration % 60} secondi.`;
+        }
+      }
+    }
+
+    // Alarm commands
+    if (lowerText.includes('sveglia') || lowerText.includes('alarm')) {
+      const parsed = alarmService.parseNaturalAlarm(lowerText);
+      if (parsed) {
+        const result = await alarmService.setAlarmIn('Sveglia voce', parsed.hour * 60 + parsed.minute);
+        if (result.success) return `Sveglia impostata per le ${parsed.hour}:${String(parsed.minute).padStart(2, '0')}`;
+      }
+    }
+
+    // Calendar commands
+    if (lowerText.includes('calendario') || lowerText.includes('agenda') || lowerText.includes('impegni') || lowerText.includes('eventi')) {
+      const events = await calendarService.getTodayEvents();
+      if (events.length > 0) {
+        return calendarService.generateAgendaSummary(events);
+      }
+      return 'Nessun evento oggi nella tua agenda.';
+    }
+
+    // SMS commands
+    if (lowerText.includes('sms') || lowerText.includes('messaggio') || lowerText.includes('mex')) {
+      const parsed = smsService.parseNaturalSMS(lowerText);
+      if (parsed.phone && parsed.message) {
+        const result = await smsService.sendSMS(parsed.phone, parsed.message);
+        if (result.success) return `SMS inviato a ${parsed.phone}!`;
+        return `Errore nell'invio SMS: ${result.error}`;
+      }
+    }
+
+    // Music control
+    if (lowerText.includes('play') || lowerText.includes('riproduci') || lowerText.includes('metti su') || lowerText.includes('ascolta')) {
+      const cmd = musicControlService.parseMusicCommand(lowerText);
+      if (cmd) {
+        if (cmd.command === 'next') { await musicControlService.nextTrack(); return 'Prossima canzone!'; }
+        if (cmd.command === 'previous') { await musicControlService.previousTrack(); return 'Canzone precedente!'; }
+        if (cmd.command === 'pause') { await musicControlService.pause(); return 'Pausa!'; }
+        if (cmd.command === 'play' && cmd.query) {
+          await musicControlService.playInSpotify(cmd.query);
+          return `Riproduco "${cmd.query}" su Spotify.`;
+        }
+      }
+    }
+
+    // Translation
+    if (lowerText.includes('traduci') || lowerText.includes('translate') || lowerText.includes('come si dice')) {
+      const parsed = translationService.parseTranslationCommand(lowerText);
+      if (parsed) {
+        const result = await translationService.translate(parsed.text, parsed.targetLang);
+        if (result.success) return `${parsed.text} → ${result.translation}`;
+      }
+    }
+
+    // Calculator
+    if (lowerText.includes('calcola') || lowerText.includes('calculate') || lowerText.includes('quanto fa')) {
+      const expr = lowerText.replace(/(?:calcola|calculate|quanto.fa|what.is|quanto.e)\s*/i, '');
+      const result = calculatorService.parseAndConvert(expr);
+      if (result.success) return `Risultato: ${result.result}`;
+    }
+
+    // Clipboard
+    if (lowerText.includes('clipboard') || lowerText.includes('incolla') || lowerText.includes('paste')) {
+      const result = await clipboardService.paste();
+      return result.success ? `Nella clipboard: "${result.text}"` : 'La clipboard è vuota.';
+    }
+
     return null;
   }, []);
 
@@ -341,7 +439,66 @@ export function useEcho() {
       }
       case 'ALARM':
       case 'TIMER': {
-        return `Ho capito, imposto ${intent === 'ALARM' ? 'la sveglia' : 'il timer'}. Puoi specificare l'orario o la durata?`;
+        const parsed = timerService.parseNaturalDuration(text);
+        if (intent === 'TIMER' && parsed > 0) {
+          const name = text.replace(/.*(?:timer|countdown|cronometro)\s*/i, '').trim() || 'Timer';
+          const result = timerService.createTimer(name, parsed);
+          if (result.success) {
+            timerService.startTimer(result.timer.id);
+            return `Timer impostato per ${Math.floor(parsed / 60)} minuti e ${parsed % 60} secondi. Avviato!`;
+          }
+        }
+        if (intent === 'ALARM') {
+          const parsedAlarm = alarmService.parseNaturalAlarm(text);
+          if (parsedAlarm) {
+            const result = await alarmService.setAlarmIn(`Sveglia voce`, parsedAlarm.hour * 60 + parsedAlarm.minute);
+            if (result.success) return `Sveglia impostata per le ${parsedAlarm.hour}:${String(parsedAlarm.minute).padStart(2, '0')}`;
+          }
+        }
+        return `Puoi dirmi: "timer per 5 minuti" oppure "sveglia alle 7".`;
+      }
+      case 'TRANSLATION': {
+        const parsed = translationService.parseTranslationCommand(text);
+        if (parsed) {
+          const result = await translationService.translate(parsed.text, parsed.targetLang);
+          if (result.success) return `${parsed.text} → ${result.translation}`;
+        }
+        return `Puoi dirmi: "traduci ciao in inglese" o "translate buongiorno in english".`;
+      }
+      case 'CALCULATOR': {
+        const result = calculatorService.parseAndConvert(text);
+        if (result.success) return `Risultato: ${result.result}`;
+        return `Puoi dirmi: "calcola 2 + 2" o "100 km in miglia".`;
+      }
+      case 'CLIPBOARD': {
+        const lower = text.toLowerCase();
+        if (lower.includes('incolla') || lower.includes('paste') || lower.includes('cosa c')) {
+          const result = await clipboardService.paste();
+          return result.success ? `Nella clipboard: "${result.text}"` : 'La clipboard è vuota.';
+        }
+        if (lower.includes('codice') || lower.includes('otp') || lower.includes('2fa')) {
+          const result = await clipboardService.readOTP();
+          return result.success ? `Codice OTP: ${result.code}` : 'Nessun codice OTP nella clipboard.';
+        }
+        const copyMatch = lower.match(/(?:copia|copy)\s+(.+)/);
+        if (copyMatch) {
+          await clipboardService.copy(copyMatch[1]);
+          return `Copiato: "${copyMatch[1]}"`;
+        }
+        return null;
+      }
+      case 'CONTACTS': {
+        const searchMatch = text.match(/(?:cerca|find|search|chi e|who is)\s+(.+)/i);
+        if (searchMatch) {
+          const results = await contactsService.searchContacts(searchMatch[1]);
+          if (results.length > 0) return contactsService.generateContactsSummary(results.slice(0, 5));
+          return `Nessun contatto trovato per "${searchMatch[1]}".`;
+        }
+        return null;
+      }
+      case 'SCREENSHOT': {
+        const result = await screenshotService.captureScreen();
+        return result.success ? 'Screenshot catturato!' : `Errore: ${result.error}`;
       }
     }
 
