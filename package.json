@@ -1,6 +1,6 @@
 {
   "name": "echo-ai",
-  "version": "2.2.0",
+  "version": "3.0.0",
   "main": "node_modules/expo/AppEntry.js",
   "scripts": {
     "start": "expo start",
@@ -16,10 +16,13 @@
     "@react-navigation/native-stack": "^6.9.26",
     "expo": "~51.0.39",
     "expo-av": "~14.0.7",
+    "expo-brightness": "~12.0.1",
     "expo-calendar": "^13.0.0", 
     "expo-contacts": "~13.0.5",
     "expo-device": "~6.0.2",
+    "expo-haptics": "~13.0.1",
     "expo-intent-launcher": "~11.0.1",
+    "expo-location": "~17.0.1",
     "expo-media-library": "~16.0.5",
     "expo-notifications": "~0.28.19",
     "expo-secure-store": "~13.0.2",

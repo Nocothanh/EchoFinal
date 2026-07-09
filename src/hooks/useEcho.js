@@ -1,6 +1,6 @@
 /**
  * useEcho.js - Hook principale JARVIS
- * Integra context awareness, quick actions, notifiche proattive
+ * Integra tutti i servizi: context, quick actions, notifiche, meteo, email, etc.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -14,6 +14,15 @@ import { VoiceInput } from '../services/VoiceInput';
 import { contextEngine } from '../services/ContextEngine';
 import { quickActions } from '../services/QuickActions';
 import { proactiveNotifications } from '../services/ProactiveNotifications';
+import { weatherService } from '../services/WeatherService';
+import { emailService } from '../services/EmailService';
+import { deviceControlService } from '../services/DeviceControlService';
+import { mapsService } from '../services/MapsService';
+import { sentimentService } from '../services/SentimentService';
+import { functionCallingService } from '../services/FunctionCallingService';
+import { wakeWordService } from '../services/WakeWordService';
+import { bargeInHandler } from '../services/BargeInHandler';
+import { dailyBriefing } from '../services/DailyBriefing';
 
 const DEFAULT_CONFIG = {
   provider: 'groq',
@@ -30,7 +39,6 @@ const SEG_BOUNDARY = /([.!?…]+["'")\]]?\s+|[:;,]\s+(?=\S{6,}))/;
 function extractSegments(buffer) {
   const segments = [];
   let rest = buffer;
-  // Simple loop: peel off matches from the start.
   while (true) {
     const m = rest.match(SEG_BOUNDARY);
     if (!m) break;
@@ -38,8 +46,6 @@ function extractSegments(buffer) {
     const chunk = rest.slice(0, end).trim();
     if (chunk) segments.push(chunk);
     rest = rest.slice(end);
-    // Only flush on strong (sentence) boundaries eagerly; keep short clauses
-    // buffered unless they've grown long.
     if (!/[.!?…]/.test(m[0]) && rest.length < 40) break;
   }
   return { segments, rest };
@@ -55,6 +61,10 @@ export function useEcho() {
   const [context, setContext] = useState(null);
   const [audioLevel, setAudioLevel] = useState(0);
   const [userName, setUserName] = useState(null);
+  const [weather, setWeather] = useState(null);
+  const [emails, setEmails] = useState([]);
+  const [sentiment, setSentiment] = useState(null);
+  const [wakeWordActive, setWakeWordActive] = useState(false);
   const busyRef = useRef(false);
   const proactiveTimerRef = useRef(null);
 
@@ -68,6 +78,13 @@ export function useEcho() {
         await conversationManager.init();
         await contextEngine.init();
         await proactiveNotifications.init();
+        await weatherService.init();
+        await emailService.init();
+        await deviceControlService.init();
+        await mapsService.init();
+        await sentimentService.init();
+        await functionCallingService.init();
+        await dailyBriefing.init();
 
         if (!mounted) {
           return;
@@ -86,8 +103,23 @@ export function useEcho() {
         setMessages(conversationManager.getMessages());
         setVoiceAvailable(await VoiceInput.isAvailable());
 
+        // Carica meteo iniziale
+        const weatherResult = await weatherService.getCurrentWeather();
+        if (weatherResult.success) {
+          setWeather(weatherResult.data);
+        }
+
         // Avvia notifiche proattive
         startProactiveNotifications();
+
+        // Avvia barge-in handler
+        await bargeInHandler.init({
+          onBargeIn: async () => {
+            await bargeInHandler.handleBargeIn();
+            setStatus('listening');
+          },
+          onAudioLevel: (level) => setAudioLevel(level)
+        });
 
       } catch (cause) {
         if (!mounted) {
@@ -108,12 +140,12 @@ export function useEcho() {
       if (proactiveTimerRef.current) {
         clearInterval(proactiveTimerRef.current);
       }
+      bargeInHandler.cleanup();
     };
   }, []);
 
   // Notifiche proattive
   const startProactiveNotifications = useCallback(() => {
-    // Controlla ogni 30 minuti se mandare notifiche
     proactiveTimerRef.current = setInterval(async () => {
       const suggestion = contextEngine.getProactiveSuggestion();
       if (suggestion) {
@@ -140,13 +172,62 @@ export function useEcho() {
         syncMessages();
         speakText(response, { lang: config.lang });
         return true;
-      } else {
-        // Lascia che LLM gestisca l'errore
-        return false;
       }
     }
     return false;
   }, [config.lang, syncMessages]);
+
+  // Gestisci function calling dal LLM
+  const handleFunctionCalling = useCallback(async (text, services) => {
+    // Analizza sentimento
+    const sentimentResult = sentimentService.analyzeSentiment(text);
+    setSentiment(sentimentResult);
+
+    // Controlla se il testo contiene comandi che il LLM potrebbe voler eseguire
+    const lowerText = text.toLowerCase();
+    
+    // Comandi meteo
+    if (lowerText.includes('meteo') || lowerText.includes('tempo') || lowerText.includes('che tempo')) {
+      const city = lowerText.replace(/.*(?:a|di|per|in)\s+/, '').trim() || null;
+      const result = await functionCallingService.executeFunction('get_weather', { city }, services);
+      if (result.success) {
+        return result.briefing;
+      }
+    }
+
+    // Comandi navigazione
+    if (lowerText.includes('naviga') || lowerText.includes('portami') || lowerText.includes('vai a')) {
+      const destination = lowerText.replace(/.*(?:a|per|in)\s+/, '').trim();
+      if (destination) {
+        const result = await functionCallingService.executeFunction('navigate_to', { destination }, services);
+        if (result.success) {
+          return result.action;
+        }
+      }
+    }
+
+    // Comandi email
+    if (lowerText.includes('email') || lowerText.includes('mail') || lowerText.includes('posta')) {
+      const result = await functionCallingService.executeFunction('get_emails', { unread_only: true }, services);
+      if (result.success) {
+        return result.briefing;
+      }
+    }
+
+    // Comandi dispositivo
+    if (lowerText.includes('luminosità') || lowerText.includes('schermo')) {
+      if (lowerText.includes('alza') || lowerText.includes('aumenta')) {
+        const result = await functionCallingService.executeFunction('control_device', { action: 'brightness_up' }, services);
+        return result.success ? 'Luminosità aumentata' : result.error;
+      }
+      if (lowerText.includes('abbassa') || lowerText.includes('diminuisci')) {
+        const result = await functionCallingService.executeFunction('control_device', { action: 'brightness_down' }, services);
+        return result.success ? 'Luminosità diminuita' : result.error;
+      }
+    }
+
+    return null;
+  }, []);
 
   const sendText = useCallback(
     async (rawText) => {
@@ -158,7 +239,6 @@ export function useEcho() {
       busyRef.current = true;
       setError('');
 
-      // Streamed assistant message state.
       let streamBuffer = '';
       let fullText = '';
       let assistantAdded = false;
@@ -189,25 +269,24 @@ export function useEcho() {
         fullText += delta;
         streamBuffer += delta;
 
-        // Update / insert the in-progress assistant message in the chat log.
         if (!assistantAdded) {
           assistantAdded = true;
           conversationManager.addMessage({ role: 'assistant', content: fullText });
         } else {
           try {
             conversationManager.updateLastMessage?.({ role: 'assistant', content: fullText });
-          } catch (_) {
-            /* fallback below */
-          }
+          } catch (_) {}
         }
         syncMessages();
-
         flushSegments(false);
       };
 
       try {
         await stopSpeech();
         await VoiceInput.stop();
+        
+        // Avvia barge-in monitoring
+        await bargeInHandler.startMonitoring();
         
         // Registra interazione nel contesto
         await contextEngine.recordInteraction();
@@ -221,17 +300,39 @@ export function useEcho() {
         const isQuickCommand = await handleQuickCommand(text);
         if (isQuickCommand) {
           busyRef.current = false;
+          await bargeInHandler.stopMonitoring();
           return;
         }
 
-        // Genera prompt con contesto JARVIS
+        // Prova function calling
+        const services = {
+          weatherService,
+          emailService,
+          deviceControlService,
+          mapsService,
+          quickActions
+        };
+        
+        const functionResponse = await handleFunctionCalling(text, services);
+        if (functionResponse) {
+          await conversationManager.addMessage({ role: 'assistant', content: functionResponse });
+          syncMessages();
+          speakText(functionResponse, ttsCfg);
+          busyRef.current = false;
+          await bargeInHandler.stopMonitoring();
+          return;
+        }
+
+        // Genera prompt con contesto JARVIS e sentimento
         const contextData = contextEngine.getFullContext();
+        const sentimentContext = sentiment ? `\n\nStato emotivo utente: ${sentiment.label} (${sentiment.description})` : '';
+        
         const systemPrompt = generateEchoPersonaPrompt({
           lastUserMessage: text,
           isCall: false,
           contextData,
           userName,
-        });
+        }) + sentimentContext;
 
         const contextMessages = conversationManager.getContextMessages(12);
         const reply = await callProvider(
@@ -245,7 +346,6 @@ export function useEcho() {
           { isCall: false, stream: true, onChunk },
         );
 
-        // Ensure the final message reflects the fully-sanitized reply.
         if (!assistantAdded) {
           await conversationManager.addMessage({ role: 'assistant', content: reply });
         } else if (conversationManager.updateLastMessage) {
@@ -255,7 +355,6 @@ export function useEcho() {
         }
         syncMessages();
 
-        // Flush any trailing buffered text as a final segment.
         flushSegments(true);
       } catch (cause) {
         const message = cause?.message || 'Si è verificato un errore.';
@@ -263,7 +362,6 @@ export function useEcho() {
         setStatus('idle');
         await stopSpeech();
         
-        // Usa frase di errore JARVIS
         const errorMessage = getRandomError();
         await conversationManager.addMessage({
           role: 'assistant',
@@ -272,9 +370,10 @@ export function useEcho() {
         syncMessages();
       } finally {
         busyRef.current = false;
+        await bargeInHandler.stopMonitoring();
       }
     },
-    [config, status, syncMessages, userName, handleQuickCommand],
+    [config, status, syncMessages, userName, handleQuickCommand, handleFunctionCalling, sentiment],
   );
 
   const startListening = useCallback(async () => {
@@ -334,6 +433,39 @@ export function useEcho() {
     contextEngine.updatePreference('userName', name);
   }, []);
 
+  // Avvia wake word
+  const startWakeWord = useCallback(async () => {
+    const result = await wakeWordService.init({
+      wakeWord: 'echo',
+      language: config.lang,
+      onWakeWord: () => {
+        setWakeWordActive(true);
+        startListening();
+      }
+    });
+    
+    if (result) {
+      await wakeWordService.startListening();
+      setWakeWordActive(true);
+    }
+  }, [config.lang, startListening]);
+
+  // Ferma wake word
+  const stopWakeWord = useCallback(async () => {
+    await wakeWordService.stopListening();
+    setWakeWordActive(false);
+  }, []);
+
+  // Ottieni briefing giornaliero
+  const getDailyBriefing = useCallback(async () => {
+    const briefing = await dailyBriefing.generateBriefing(
+      'default',
+      { name: userName || 'Utente' },
+      {}
+    );
+    return briefing;
+  }, [userName]);
+
   const isDisabled = useMemo(() => status === 'thinking' || status === 'speaking', [status]);
   const isThinking = status === 'thinking';
   const isListening = status === 'listening';
@@ -359,6 +491,13 @@ export function useEcho() {
     userName,
     setUserName: setUserNameCallback,
     greetUser,
+    weather,
+    emails,
+    sentiment,
+    wakeWordActive,
+    startWakeWord,
+    stopWakeWord,
+    getDailyBriefing,
   };
 }
 
