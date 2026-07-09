@@ -409,7 +409,9 @@ class QuickActionsService {
       if (packageName) {
         try {
           await IntentLauncher.startActivityAsync('android.intent.action.MAIN', {
-            packageName
+            packageName,
+            categories: ['android.intent.category.LAUNCHER'],
+            flags: 0x10000000
           });
           return { success: true, message: `Sto aprendo ${appName}` };
         } catch (error) {
