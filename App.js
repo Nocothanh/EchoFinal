@@ -1,12 +1,29 @@
-import React from 'react';
+/**
+ * App.js - Echo AI - JARVIS-like Mobile Assistant
+ * 
+ * Miglioramenti:
+ * - Aggiunta navigazione con schermata Impostazioni
+ * - Pulsante settings nell'header
+ * - Supporto multi-provider LLM
+ * - API keys configurabili direttamente dall'app
+ */
+
+import React, { useState, useEffect } from 'react';
 import { KeyboardAvoidingView, Platform, StyleSheet, Text, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import { NavigationContainer } from '@react-navigation/native';
+import { createNativeStackNavigator } from '@react-navigation/native-stack';
 
 import EchoCore from './src/components/EchoCore';
 import ChatLog from './src/components/ChatLog';
 import InputBar from './src/components/InputBar';
+import SettingsButton from './src/components/SettingsButton';
+import SettingsScreen from './src/screens/SettingsScreen';
 import theme from './src/config/theme';
 import { useEcho } from './src/hooks/useEcho';
+import { envLoader } from './src/services/EnvLoader';
+
+const Stack = createNativeStackNavigator();
 
 const STATUS_LABELS = {
   idle: 'Pronto',
@@ -15,7 +32,7 @@ const STATUS_LABELS = {
   speaking: 'Sto parlando',
 };
 
-export default function App() {
+function HomeScreen({ navigation }) {
   const {
     messages,
     input,
@@ -31,12 +48,33 @@ export default function App() {
     stopListening,
   } = useEcho();
 
+  const [isConfigured, setIsConfigured] = useState(false);
+
+  useEffect(() => {
+    // Check if app is configured
+    const checkConfig = () => {
+      setIsConfigured(envLoader.hasAnyProvider());
+    };
+    
+    checkConfig();
+    
+    // Listen for config changes
+    const unsubscribe = envLoader.addListener(checkConfig);
+    return unsubscribe;
+  }, []);
+
   const statusLabel = STATUS_LABELS[status] || STATUS_LABELS.idle;
 
   return (
     <View style={styles.root}>
       <StatusBar style="light" />
       <View style={styles.backdrop} />
+
+      {/* Settings Button */}
+      <SettingsButton
+        onPress={() => navigation.navigate('Settings')}
+        configured={isConfigured}
+      />
 
       <KeyboardAvoidingView
         style={styles.shell}
@@ -45,6 +83,14 @@ export default function App() {
         <View style={styles.hero}>
           <Text style={styles.title}>Echo</Text>
           <Text style={styles.subtitle}>Interfaccia vocale futuristica, pronta all'uso.</Text>
+          
+          {!isConfigured && (
+            <View style={styles.setupBanner}>
+              <Text style={styles.setupText}>
+                ⚙️ Configura le API keys nelle impostazioni per iniziare
+              </Text>
+            </View>
+          )}
         </View>
 
         <View style={styles.coreWrap}>
@@ -63,11 +109,33 @@ export default function App() {
           onSend={sendFromInput}
           onMicPress={isListening ? stopListening : startListening}
           isListening={isListening}
-          disabled={isDisabled}
+          disabled={isDisabled || !isConfigured}
           voiceAvailable={voiceAvailable}
         />
       </KeyboardAvoidingView>
     </View>
+  );
+}
+
+export default function App() {
+  return (
+    <NavigationContainer>
+      <Stack.Navigator
+        screenOptions={{
+          headerShown: false,
+          animation: 'slide_from_right',
+        }}
+      >
+        <Stack.Screen name="Home" component={HomeScreen} />
+        <Stack.Screen
+          name="Settings"
+          component={SettingsScreen}
+          options={{
+            presentation: 'modal',
+          }}
+        />
+      </Stack.Navigator>
+    </NavigationContainer>
   );
 }
 
@@ -98,6 +166,19 @@ const styles = StyleSheet.create({
     marginTop: 6,
     color: theme.colors.textMuted,
     fontSize: 14,
+  },
+  setupBanner: {
+    marginTop: 12,
+    backgroundColor: 'rgba(251, 191, 36, 0.15)',
+    padding: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(251, 191, 36, 0.3)',
+  },
+  setupText: {
+    color: '#FCD34D',
+    fontSize: 13,
+    textAlign: 'center',
   },
   coreWrap: {
     alignItems: 'center',
