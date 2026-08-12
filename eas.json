@@ -12,7 +12,8 @@
         "env": {
           "NODE_ENV": "production"
         }
-      }
+      },
+      "install": "npm install && npx expo install --fix"
     },
     "production": {
       "distribution": "internal",
@@ -22,7 +23,8 @@
         "env": {
           "NODE_ENV": "production"
         }
-      }
+      },
+      "install": "npm install && npx expo install --fix"
     }
   },
   "submit": {
