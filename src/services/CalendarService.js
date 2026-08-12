@@ -8,7 +8,7 @@ import * as Calendar from 'expo-calendar';
 class CalendarService {
   constructor() {
     this.isInitialized = false;
-    this calendars = [];
+    this.calendars = [];
     this.defaultCalendarId = null;
   }
 
