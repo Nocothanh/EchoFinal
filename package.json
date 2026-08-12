@@ -49,8 +49,7 @@
   },
   "overrides": {
     "expo-font": "12.0.4",
-    "expo-modules-core": "1.12.26",
-    "expo-sharing": "13.0.0"
+    "expo-modules-core": "1.12.26"
   },
   "private": true
 }
