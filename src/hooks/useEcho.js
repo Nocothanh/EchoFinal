@@ -52,7 +52,7 @@ const DEFAULT_CONFIG = {
 
 // Split streamed text into speech-friendly segments at sentence/clause
 // boundaries. Returns { segments, rest }.
-const SEG_BOUNDARY = /([.!?…]+["'")\]]?\s+|[:;,]\s+(?=\S{6,}))/;
+const SEG_BOUNDARY = /([.!?…]+["')\]]?\s+|[:;,]\s+(?=\S{6,}))/;
 function extractSegments(buffer) {
   const segments = [];
   let rest = buffer;
@@ -66,6 +66,36 @@ function extractSegments(buffer) {
     if (!/[.!?…]/.test(m[0]) && rest.length < 40) break;
   }
   return { segments, rest };
+}
+
+function getEffectiveProviderConfig() {
+  const provider = envLoader.get('provider') || 'groq';
+
+  if (provider === 'groq') {
+    return {
+      provider: 'groq',
+      apiKey: envLoader.get('groq.apiKey') || '',
+      model: envLoader.get('groq.model') || DEFAULT_CONFIG.model,
+    };
+  }
+
+  if (provider === 'openai') {
+    return {
+      provider: 'openai',
+      apiKey: envLoader.get('openai.apiKey') || '',
+      model: envLoader.get('openai.model') || 'gpt-4o',
+    };
+  }
+
+  if (provider === 'anthropic') {
+    return {
+      provider: 'anthropic',
+      apiKey: envLoader.get('anthropic.apiKey') || '',
+      model: envLoader.get('anthropic.model') || 'claude-3-5-sonnet-20241022',
+    };
+  }
+
+  return null;
 }
 
 export function useEcho() {
@@ -118,14 +148,19 @@ export function useEcho() {
           return;
         }
 
+        const providerConfig = getEffectiveProviderConfig();
         setConfig({
-          provider: 'groq',
-          apiKey: envLoader.get('groq.apiKey') || '',
-          model: envLoader.get('groq.model') || DEFAULT_CONFIG.model,
+          provider: providerConfig?.provider || 'groq',
+          apiKey: providerConfig?.apiKey || '',
+          model: providerConfig?.model || DEFAULT_CONFIG.model,
           elKey: envLoader.get('elevenlabs.apiKey') || '',
           elVoice: envLoader.get('elevenlabs.voiceId') || '',
           lang: 'it-IT',
         });
+
+        if (!envLoader.hasAnyProvider()) {
+          setError('Nessun provider LLM configurato. Aggiungi GROQ, OpenAI o Anthropic nelle impostazioni.');
+        }
 
         setContext(contextEngine.getFullContext());
         setMessages(conversationManager.getMessages());
@@ -191,9 +226,9 @@ export function useEcho() {
     const command = quickActions.detectCommand(text);
     if (command) {
       setStatus('thinking');
-      
+
       const result = await quickActions.executeCommand(command);
-      
+
       if (result.success) {
         const response = `Perfetto! ${result.message}`;
         await conversationManager.addMessage({ role: 'assistant', content: response });
@@ -226,7 +261,7 @@ export function useEcho() {
     }
 
     const lowerText = text.toLowerCase();
-    
+
     // Comandi meteo
     if (lowerText.includes('meteo') || lowerText.includes('tempo') || lowerText.includes('che tempo')) {
       const city = lowerText.replace(/.*(?:a|di|per|in)\s+/, '').trim() || null;
@@ -512,6 +547,13 @@ export function useEcho() {
         return;
       }
 
+      const providerConfig = getEffectiveProviderConfig();
+      if (!providerConfig || !providerConfig.apiKey) {
+        setError('Configura una API key in Settings prima di usare Echo.');
+        setStatus('idle');
+        return;
+      }
+
       busyRef.current = true;
       setError('');
 
@@ -560,13 +602,13 @@ export function useEcho() {
       try {
         await stopSpeech();
         await VoiceInput.stop();
-        
+
         // Avvia barge-in monitoring
         await bargeInHandler.startMonitoring();
-        
+
         // Registra interazione nel contesto
         await contextEngine.recordInteraction();
-        
+
         await conversationManager.addMessage({ role: 'user', content: text });
         syncMessages();
         setInput('');
@@ -588,7 +630,7 @@ export function useEcho() {
           mapsService,
           quickActions
         };
-        
+
         const functionResponse = await handleFunctionCalling(text, services);
         if (functionResponse) {
           await conversationManager.addMessage({ role: 'assistant', content: functionResponse });
@@ -602,7 +644,7 @@ export function useEcho() {
         // Genera prompt con contesto JARVIS e sentimento
         const contextData = contextEngine.getFullContext();
         const sentimentContext = sentiment ? `\n\nStato emotivo utente: ${sentiment.label} (${sentiment.description})` : '';
-        
+
         const systemPrompt = generateEchoPersonaPrompt({
           lastUserMessage: text,
           isCall: false,
@@ -613,9 +655,9 @@ export function useEcho() {
         const contextMessages = conversationManager.getContextMessages(12);
         const reply = await callProvider(
           {
-            provider: config.provider || 'groq',
-            apiKey: config.apiKey,
-            model: config.model,
+            provider: providerConfig.provider,
+            apiKey: providerConfig.apiKey,
+            model: providerConfig.model,
             systemPrompt,
           },
           contextMessages,
@@ -637,7 +679,7 @@ export function useEcho() {
         setError(message);
         setStatus('idle');
         await stopSpeech();
-        
+
         const errorMessage = getRandomError();
         await conversationManager.addMessage({
           role: 'assistant',
@@ -654,6 +696,12 @@ export function useEcho() {
 
   const startListening = useCallback(async () => {
     if (busyRef.current || status === 'speaking') {
+      return;
+    }
+
+    const providerConfig = getEffectiveProviderConfig();
+    if (!providerConfig || !providerConfig.apiKey) {
+      setError('Configura una API key in Settings prima di usare Echo.');
       return;
     }
 
@@ -719,7 +767,7 @@ export function useEcho() {
         startListening();
       }
     });
-    
+
     if (result) {
       await wakeWordService.startListening();
       setWakeWordActive(true);
