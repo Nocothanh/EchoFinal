@@ -17,6 +17,7 @@ import {
   Platform,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { envLoader } from '../services/EnvLoader';
 import { secureKeyStore } from '../services/SecureKeyStore';
@@ -28,7 +29,10 @@ import {
   validateApiKey,
   getBeginnerRecommendation,
 } from '../config/providers';
+import { NEXUS_MODULES, ECHO_ASD_MOODS } from '../../persona-generator-develop';
 import theme from '../config/theme';
+
+const PERSONA_SETTINGS_KEY = 'echo_persona_settings';
 
 const ProviderCard = ({ provider, selected, onSelect }) => (
   <TouchableOpacity
@@ -117,6 +121,8 @@ export default function SettingsScreen({ navigation }) {
   });
   const [elevenLabsKey, setElevenLabsKey] = useState('');
   const [elevenLabsVoice, setElevenLabsVoice] = useState('');
+  const [mood, setMood] = useState('neutral');
+  const [moduleId, setModuleId] = useState('echo');
   const [loading, setLoading] = useState(false);
   const [testing, setTesting] = useState(false);
   const [showKeys, setShowKeys] = useState(false);
@@ -149,6 +155,16 @@ export default function SettingsScreen({ navigation }) {
     } finally {
       setLoading(false);
     }
+
+    // Carica personalità EchoASD (umore + modulo)
+    try {
+      const rawPersona = await AsyncStorage.getItem(PERSONA_SETTINGS_KEY);
+      if (rawPersona) {
+        const parsed = JSON.parse(rawPersona);
+        if (parsed.mood && ECHO_ASD_MOODS[parsed.mood]) setMood(parsed.mood);
+        if (NEXUS_MODULES.some((m) => m.id === parsed.moduleId)) setModuleId(parsed.moduleId);
+      }
+    } catch (_) {}
   };
 
   const handleSave = async () => {
@@ -170,6 +186,12 @@ export default function SettingsScreen({ navigation }) {
       await envLoader.updateKey('openai', apiKeys.openai, models.openai);
       await envLoader.updateKey('anthropic', apiKeys.anthropic, models.anthropic);
       await envLoader.updateElevenLabs(elevenLabsKey, elevenLabsVoice);
+
+      // Salva personalità EchoASD (umore + modulo)
+      await AsyncStorage.setItem(
+        PERSONA_SETTINGS_KEY,
+        JSON.stringify({ mood, moduleId }),
+      );
 
       Alert.alert('Successo', 'Impostazioni salvate!', [
         { text: 'OK', onPress: () => navigation.goBack() },
@@ -338,6 +360,63 @@ export default function SettingsScreen({ navigation }) {
               autoCapitalize="none"
             />
           </View>
+        </View>
+
+        {/* Personalità & Moduli (EchoASD) */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Personalità & Moduli</Text>
+          <Text style={styles.sectionDesc}>
+            Tono di Echo e modulo specializzato (da EchoASD)
+          </Text>
+
+          <Text style={styles.sectionLabel}>Umore</Text>
+          <View style={styles.chipWrap}>
+            {Object.entries(ECHO_ASD_MOODS).map(([id]) => (
+              <TouchableOpacity
+                key={id}
+                style={[styles.chip, mood === id && styles.chipSelected]}
+                onPress={() => setMood(id)}
+              >
+                <Text
+                  style={[
+                    styles.chipText,
+                    mood === id && styles.chipTextSelected,
+                  ]}
+                >
+                  {id}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          <Text style={[styles.sectionLabel, styles.chipLabelSpacing]}>Modulo Nexus</Text>
+          <View style={styles.chipWrap}>
+            {NEXUS_MODULES.map((mod) => (
+              <TouchableOpacity
+                key={mod.id}
+                style={[
+                  styles.chip,
+                  { borderColor: mod.color },
+                  moduleId === mod.id && { backgroundColor: mod.color },
+                ]}
+                onPress={() => setModuleId(mod.id)}
+              >
+                <Text
+                  style={[
+                    styles.chipText,
+                    { color: moduleId === mod.id ? '#fff' : mod.color },
+                  ]}
+                >
+                  {mod.icon} {mod.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          <Text style={[styles.sectionLabel, styles.chipLabelSpacing]}>Comandi rapidi</Text>
+          <Text style={styles.sectionReminder}>
+            Nella chat puoi usare /help, /clear, /compact, /model, /status, /mood, /module
+          </Text>
         </View>
 
         {/* Buttons */}
@@ -539,6 +618,40 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: theme.colors.text,
     marginBottom: 12,
+  },
+  chipLabelSpacing: {
+    marginTop: 20,
+  },
+  chipWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  chip: {
+    backgroundColor: theme.colors.surface || '#1a1a2e',
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: theme.colors.border || '#2a2a4a',
+  },
+  chipSelected: {
+    backgroundColor: theme.colors.primary,
+    borderColor: theme.colors.primary,
+  },
+  chipText: {
+    color: theme.colors.text,
+    fontSize: 13,
+    fontWeight: '600',
+    textTransform: 'capitalize',
+  },
+  chipTextSelected: {
+    color: '#fff',
+  },
+  sectionReminder: {
+    fontSize: 13,
+    color: theme.colors.textMuted,
+    lineHeight: 20,
   },
   modelChip: {
     backgroundColor: theme.colors.surface || '#1a1a2e',

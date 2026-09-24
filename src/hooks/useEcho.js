@@ -4,10 +4,24 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { envLoader } from '../services/EnvLoader';
 import { callProvider } from '../services/LLMClient';
-import { generateEchoPersonaPrompt, getRandomGreeting, getRandomThinking, getRandomError, getRandomHumor, getRandomProactive } from '../../persona-generator-develop';
+import {
+  generateEchoPersonaPrompt,
+  getRandomThinking,
+  getRandomError,
+  getRandomHumor,
+  getRandomProactive,
+  generateEchoASDPersonaPrompt,
+  getRandomInitMessage,
+  getRandomEchoGreeting,
+  getModuleById,
+  NEXUS_MODULES,
+  ECHO_ASD_MOODS,
+  ECHO_ASD_SLASH_COMMANDS,
+} from '../../persona-generator-develop';
 import { speak as speakText, stopSpeech } from '../services/TTS';
 import { conversationManager } from '../services/ConversationManager';
 import { VoiceInput } from '../services/VoiceInput';
@@ -50,9 +64,12 @@ const DEFAULT_CONFIG = {
   lang: 'it-IT',
 };
 
+// Impostazioni persona da EchoASD (umore + modulo Nexus)
+const PERSONA_SETTINGS_KEY = 'echo_persona_settings';
+
 // Split streamed text into speech-friendly segments at sentence/clause
 // boundaries. Returns { segments, rest }.
-const SEG_BOUNDARY = /([.!?…]+["')\]]?\s+|[:;,]\s+(?=\S{6,}))/;
+const SEG_BOUNDARY = /([.!?…]+["'")\]]?\s+|[:;,]\s+(?=\S{6,}))/;
 function extractSegments(buffer) {
   const segments = [];
   let rest = buffer;
@@ -66,36 +83,6 @@ function extractSegments(buffer) {
     if (!/[.!?…]/.test(m[0]) && rest.length < 40) break;
   }
   return { segments, rest };
-}
-
-function getEffectiveProviderConfig() {
-  const provider = envLoader.get('provider') || 'groq';
-
-  if (provider === 'groq') {
-    return {
-      provider: 'groq',
-      apiKey: envLoader.get('groq.apiKey') || '',
-      model: envLoader.get('groq.model') || DEFAULT_CONFIG.model,
-    };
-  }
-
-  if (provider === 'openai') {
-    return {
-      provider: 'openai',
-      apiKey: envLoader.get('openai.apiKey') || '',
-      model: envLoader.get('openai.model') || 'gpt-4o',
-    };
-  }
-
-  if (provider === 'anthropic') {
-    return {
-      provider: 'anthropic',
-      apiKey: envLoader.get('anthropic.apiKey') || '',
-      model: envLoader.get('anthropic.model') || 'claude-3-5-sonnet-20241022',
-    };
-  }
-
-  return null;
 }
 
 export function useEcho() {
@@ -112,8 +99,26 @@ export function useEcho() {
   const [emails, setEmails] = useState([]);
   const [sentiment, setSentiment] = useState(null);
   const [wakeWordActive, setWakeWordActive] = useState(false);
+  const [mood, setMoodState] = useState('neutral');
+  const [moduleId, setModuleIdState] = useState('echo');
   const busyRef = useRef(false);
   const proactiveTimerRef = useRef(null);
+  const initiativeTimerRef = useRef(null);
+  const statusRef = useRef('idle');
+  const moduleIdRef = useRef(moduleId);
+  const configRef = useRef(config);
+
+  useEffect(() => {
+    configRef.current = config;
+  }, [config]);
+
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
+
+  useEffect(() => {
+    moduleIdRef.current = moduleId;
+  }, [moduleId]);
 
   useEffect(() => {
     let mounted = true;
@@ -148,21 +153,31 @@ export function useEcho() {
           return;
         }
 
-        const providerConfig = getEffectiveProviderConfig();
         setConfig({
-          provider: providerConfig?.provider || 'groq',
-          apiKey: providerConfig?.apiKey || '',
-          model: providerConfig?.model || DEFAULT_CONFIG.model,
+          provider: 'groq',
+          apiKey: envLoader.get('groq.apiKey') || '',
+          model: envLoader.get('groq.model') || DEFAULT_CONFIG.model,
           elKey: envLoader.get('elevenlabs.apiKey') || '',
           elVoice: envLoader.get('elevenlabs.voiceId') || '',
           lang: 'it-IT',
         });
 
+        // Carica personalità EchoASD (umore + modulo)
+        try {
+          const rawPersona = await AsyncStorage.getItem(PERSONA_SETTINGS_KEY);
+          if (rawPersona) {
+            const parsed = JSON.parse(rawPersona);
+            if (parsed.mood && ECHO_ASD_MOODS[parsed.mood]) setMoodState(parsed.mood);
+            if (parsed.moduleId && getModuleById(parsed.moduleId).id === parsed.moduleId) {
+              setModuleIdState(parsed.moduleId);
+            }
+          }
+        } catch (_) {}
         if (!envLoader.hasAnyProvider()) {
           setError('Nessun provider LLM configurato. Aggiungi GROQ, OpenAI o Anthropic nelle impostazioni.');
         }
-
         setContext(contextEngine.getFullContext());
+
         setMessages(conversationManager.getMessages());
         setVoiceAvailable(await VoiceInput.isAvailable());
 
@@ -174,6 +189,28 @@ export function useEcho() {
 
         // Avvia notifiche proattive
         startProactiveNotifications();
+
+        // Avvia iniziativa di Echo (Echo parla per prima, come EchoASD)
+        const scheduleInitiative = () => {
+          clearTimeout(initiativeTimerRef.current);
+          const delay = (180 + Math.floor(Math.random() * 540)) * 1000;
+          initiativeTimerRef.current = setTimeout(async () => {
+            if (mounted && !busyRef.current && statusRef.current === 'idle' && moduleIdRef.current === 'echo') {
+              try {
+                const initMsg = getRandomInitMessage();
+                await conversationManager.addMessage({ role: 'assistant', content: initMsg });
+                syncMessages();
+                speakText(initMsg, {
+                  lang: configRef.current.lang,
+                  elKey: configRef.current.elKey,
+                  elVoice: configRef.current.elVoice,
+                });
+              } catch (_) {}
+            }
+            scheduleInitiative();
+          }, delay);
+        };
+        scheduleInitiative();
 
         // Avvia barge-in handler
         await bargeInHandler.init({
@@ -203,6 +240,9 @@ export function useEcho() {
       if (proactiveTimerRef.current) {
         clearInterval(proactiveTimerRef.current);
       }
+      if (initiativeTimerRef.current) {
+        clearTimeout(initiativeTimerRef.current);
+      }
       bargeInHandler.cleanup();
     };
   }, []);
@@ -221,14 +261,123 @@ export function useEcho() {
     setMessages(conversationManager.getMessages());
   }, []);
 
+  // Persistenza personalità EchoASD (umore + modulo)
+  const persistPersona = useCallback(async (nextMood, nextModuleId) => {
+    try {
+      await AsyncStorage.setItem(
+        PERSONA_SETTINGS_KEY,
+        JSON.stringify({ mood: nextMood, moduleId: nextModuleId }),
+      );
+    } catch (_) {}
+  }, []);
+
+  const setMood = useCallback(
+    (next) => {
+      if (!ECHO_ASD_MOODS[next]) return;
+      setMoodState(next);
+      persistPersona(next, moduleId);
+    },
+    [moduleId, persistPersona],
+  );
+
+  const setModule = useCallback(
+    (next) => {
+      if (getModuleById(next).id !== next) return;
+      setModuleIdState(next);
+      persistPersona(mood, next);
+    },
+    [mood, persistPersona],
+  );
+
+  // Gestione comandi slash stile EchoASD
+  const handleSlashCommand = useCallback(
+    async (rawText) => {
+      const parts = String(rawText || '').trim().split(/\s+/);
+      const cmd = parts[0].toLowerCase();
+      const arg = parts.slice(1).join(' ').toLowerCase().trim();
+
+      const sendAssistant = async (content) => {
+        await conversationManager.addMessage({ role: 'assistant', content });
+        syncMessages();
+      };
+
+      switch (cmd) {
+        case '/help': {
+          const helpText = ECHO_ASD_SLASH_COMMANDS.map((c) => `${c.cmd} — ${c.desc}`).join('\n');
+          await sendAssistant(`Comandi disponibili:\n${helpText}`);
+          return true;
+        }
+        case '/clear': {
+          await conversationManager.reset();
+          syncMessages();
+          await sendAssistant('Cronologia cancellata.');
+          return true;
+        }
+        case '/compact': {
+          const msgs = conversationManager.getMessages();
+          if (msgs.length <= 10) {
+            await sendAssistant(`Cronologia breve (${msgs.length} messaggi), niente da comprimere.`);
+            return true;
+          }
+          const keep = msgs.slice(-10);
+          const removed = msgs.length - keep.length;
+          await conversationManager.reset();
+          for (const m of keep) await conversationManager.addMessage(m);
+          syncMessages();
+          await sendAssistant(`✓ Comprima: rimossi ${removed} messaggi vecchi.`);
+          return true;
+        }
+        case '/model': {
+          if (arg) {
+            setConfig((prev) => ({ ...prev, model: arg }));
+            await sendAssistant(`Modello: ${arg}`);
+          } else {
+            await sendAssistant(`Provider: ${config.provider} · Modello: ${config.model || 'default'}`);
+          }
+          return true;
+        }
+        case '/status': {
+          const mod = getModuleById(moduleId);
+          await sendAssistant(
+            `Provider: ${config.provider}\nModello: ${config.model || 'default'}\nModulo: ${mod.label}\nUmore: ${mood}\nMessaggi: ${conversationManager.getMessages().length}`,
+          );
+          return true;
+        }
+        case '/mood': {
+          if (arg && ECHO_ASD_MOODS[arg]) {
+            setMood(arg);
+            await sendAssistant(`Umore Echo: ${arg}`);
+          } else {
+            await sendAssistant(`Uso: /mood [neutral|playful|annoyed|cold] · Attuale: ${mood}`);
+          }
+          return true;
+        }
+        case '/module': {
+          if (arg && getModuleById(arg).id === arg) {
+            setModule(arg);
+            await sendAssistant(`Modulo ${getModuleById(arg).label} attivato.`);
+          } else {
+            await sendAssistant(
+              `Moduli: ${NEXUS_MODULES.map((m) => m.id).join(', ')}\nAttuale: ${getModuleById(moduleId).label}`,
+            );
+          }
+          return true;
+        }
+        default:
+          return false;
+      }
+    },
+    [config, mood, moduleId, setMood, setModule, syncMessages],
+  );
+
   // Gestisci comandi rapidi
   const handleQuickCommand = useCallback(async (text) => {
     const command = quickActions.detectCommand(text);
     if (command) {
       setStatus('thinking');
-
+      
       const result = await quickActions.executeCommand(command);
-
+      
       if (result.success) {
         const response = `Perfetto! ${result.message}`;
         await conversationManager.addMessage({ role: 'assistant', content: response });
@@ -261,7 +410,7 @@ export function useEcho() {
     }
 
     const lowerText = text.toLowerCase();
-
+    
     // Comandi meteo
     if (lowerText.includes('meteo') || lowerText.includes('tempo') || lowerText.includes('che tempo')) {
       const city = lowerText.replace(/.*(?:a|di|per|in)\s+/, '').trim() || null;
@@ -547,13 +696,6 @@ export function useEcho() {
         return;
       }
 
-      const providerConfig = getEffectiveProviderConfig();
-      if (!providerConfig || !providerConfig.apiKey) {
-        setError('Configura una API key in Settings prima di usare Echo.');
-        setStatus('idle');
-        return;
-      }
-
       busyRef.current = true;
       setError('');
 
@@ -602,13 +744,23 @@ export function useEcho() {
       try {
         await stopSpeech();
         await VoiceInput.stop();
-
+        
         // Avvia barge-in monitoring
         await bargeInHandler.startMonitoring();
-
+        
         // Registra interazione nel contesto
         await contextEngine.recordInteraction();
-
+        
+        // Comandi slash stile EchoASD (/help /clear /mood /module ...)
+        if (text.startsWith('/')) {
+          const consumed = await handleSlashCommand(text);
+          if (consumed) {
+            busyRef.current = false;
+            await bargeInHandler.stopMonitoring();
+            return;
+          }
+        }
+        
         await conversationManager.addMessage({ role: 'user', content: text });
         syncMessages();
         setInput('');
@@ -630,7 +782,7 @@ export function useEcho() {
           mapsService,
           quickActions
         };
-
+        
         const functionResponse = await handleFunctionCalling(text, services);
         if (functionResponse) {
           await conversationManager.addMessage({ role: 'assistant', content: functionResponse });
@@ -641,27 +793,48 @@ export function useEcho() {
           return;
         }
 
-        // Genera prompt con contesto JARVIS e sentimento
+        // Genera prompt con personalità EchoASD (umore + modulo) e contesto
         const contextData = contextEngine.getFullContext();
         const sentimentContext = sentiment ? `\n\nStato emotivo utente: ${sentiment.label} (${sentiment.description})` : '';
 
-        const systemPrompt = generateEchoPersonaPrompt({
-          lastUserMessage: text,
-          isCall: false,
-          contextData,
-          userName,
-        }) + sentimentContext;
+        // Mood casuale nel modulo Echo (come EchoASD: cambia da solo ogni tanto)
+        const activeModule = getModuleById(moduleId);
+        let activeMood = mood;
+        if (activeModule.sys === null && Math.random() < 0.1) {
+          activeMood = ['neutral', 'neutral', 'neutral', 'playful', 'annoyed', 'cold'][
+            Math.floor(Math.random() * 6)
+          ];
+          setMoodState(activeMood);
+          persistPersona(activeMood, moduleId);
+        }
+
+        const systemPrompt =
+          generateEchoASDPersonaPrompt({
+            mood: activeMood,
+            moduleId,
+            moduleSys: activeModule.sys,
+            userName,
+            contextData,
+            lastUserMessage: text,
+            isCall: false,
+          }) + sentimentContext;
+
+        // Echo = risposte brevi e creative; moduli = analisi ampie
+        const isEchoModule = activeModule.sys === null;
+        const maxTokens = isEchoModule ? 150 : 1000;
+        const temperature = isEchoModule ? 1.1 : 0.7;
 
         const contextMessages = conversationManager.getContextMessages(12);
         const reply = await callProvider(
           {
-            provider: providerConfig.provider,
-            apiKey: providerConfig.apiKey,
-            model: providerConfig.model,
+            provider: config.provider || 'groq',
+            apiKey: config.apiKey,
+            model: config.model,
             systemPrompt,
+            temperature,
           },
           contextMessages,
-          { isCall: false, stream: true, onChunk },
+          { isCall: false, stream: true, onChunk, maxTokens },
         );
 
         if (!assistantAdded) {
@@ -679,7 +852,7 @@ export function useEcho() {
         setError(message);
         setStatus('idle');
         await stopSpeech();
-
+        
         const errorMessage = getRandomError();
         await conversationManager.addMessage({
           role: 'assistant',
@@ -691,17 +864,11 @@ export function useEcho() {
         await bargeInHandler.stopMonitoring();
       }
     },
-    [config, status, syncMessages, userName, handleQuickCommand, handleFunctionCalling, sentiment],
+    [config, status, syncMessages, userName, handleQuickCommand, handleFunctionCalling, sentiment, mood, moduleId, handleSlashCommand, persistPersona],
   );
 
   const startListening = useCallback(async () => {
     if (busyRef.current || status === 'speaking') {
-      return;
-    }
-
-    const providerConfig = getEffectiveProviderConfig();
-    if (!providerConfig || !providerConfig.apiKey) {
-      setError('Configura una API key in Settings prima di usare Echo.');
       return;
     }
 
@@ -743,9 +910,9 @@ export function useEcho() {
     sendText(input);
   }, [input, sendText]);
 
-  // Saluta l'utente
+  // Saluta l'utente (tono companion stile EchoASD)
   const greetUser = useCallback(async () => {
-    const greeting = getRandomGreeting();
+    const greeting = getRandomEchoGreeting();
     await conversationManager.addMessage({ role: 'assistant', content: greeting });
     syncMessages();
     speakText(greeting, { lang: config.lang });
@@ -767,7 +934,7 @@ export function useEcho() {
         startListening();
       }
     });
-
+    
     if (result) {
       await wakeWordService.startListening();
       setWakeWordActive(true);
@@ -822,6 +989,11 @@ export function useEcho() {
     startWakeWord,
     stopWakeWord,
     getDailyBriefing,
+    mood,
+    setMood,
+    moduleId,
+    setModule,
+    modules: NEXUS_MODULES,
   };
 }
 
